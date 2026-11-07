@@ -32,6 +32,24 @@ The existing free-roam companion data must not be assumed to expose the original
 - No cheat is marked complete until it is built and tested in the actual Android game.
 - Release signing uses a private key controlled by the owner; never commit signing keys or passwords.
 
-## Current status
+## Current status — v0.2 prototype
 
-This document records the source audit and implementation constraints only. It does not claim that the HUD button, cheat logic, or APK has been implemented or tested.
+Implemented on `feature/mod-menu-v0.2`:
+- The existing HUD has a dedicated MOD control wired to `GameActivity.showModMenu()`.
+- The panel exposes Master, Auto Shift, Infinite NOS, Race Assist, and Perfect Drift settings.
+- Auto Shift target RPM is configurable from 7,000 to 11,000 RPM.
+- Settings are stored separately at `<gameRoot>/mods/NFSU2_ModMenu/modmenu.ini`.
+- All options default OFF. Saving uses a temporary file and a backup/rollback path to avoid deleting a prior configuration on a failed write.
+- The MOD HUD control remains available when the touch-control layout is hidden.
+
+Not implemented:
+- No cheat currently changes live gameplay.
+- Auto Shift / Perfect Shift has no verified shift-judgement hook.
+- Infinite NOS has no verified race NOS hook.
+- Race Assist has no verified opponent or race-result hook.
+- Perfect Drift has no verified drift scoring or vehicle-control hook.
+
+Validation:
+- Source integration points and branch contents were inspected through GitHub.
+- The PR has no reported GitHub Actions run/status for the latest commit yet; APK compilation and device testing remain outstanding.
+- Do not merge this draft or distribute it as a functioning cheat APK until the Android build and on-device regression tests pass.
