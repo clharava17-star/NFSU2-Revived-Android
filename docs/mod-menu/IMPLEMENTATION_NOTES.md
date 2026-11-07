@@ -57,6 +57,7 @@ Implemented on `feature/mod-menu-v0.2`:
 - Settings are stored separately at `<gameRoot>/mods/NFSU2_ModMenu/modmenu.ini`.
 - All options default OFF. Saving uses a temporary file and a backup/rollback path to avoid deleting a prior configuration on a failed write.
 - The MOD HUD control remains available when the touch-control layout is hidden.
+- A low-opacity `Yogie Clharava` watermark is drawn at the bottom-center of the touch HUD and in the Mod Menu panel footer.
 
 Not implemented:
 - No cheat currently changes live gameplay.
