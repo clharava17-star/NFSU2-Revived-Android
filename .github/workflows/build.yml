@@ -11,6 +11,9 @@ on:
 permissions:
   contents: write
 
+env:
+  NFSU2_PRIVATE_RELEASE_SIGNING: ${{ secrets.NFSU2_RELEASE_KEYSTORE_BASE64 != '' && secrets.NFSU2_RELEASE_STORE_PASSWORD != '' && secrets.NFSU2_RELEASE_KEY_ALIAS != '' && secrets.NFSU2_RELEASE_KEY_PASSWORD != '' }}
+
 jobs:
   build-apk:
     name: Build Android NFSU2 Release APK
@@ -122,12 +125,11 @@ jobs:
       - name: Prepare private release signing key (optional)
         env:
           KEYSTORE_BASE64: ${{ secrets.NFSU2_RELEASE_KEYSTORE_BASE64 }}
-        if: ${{ env.KEYSTORE_BASE64 != '' }}
+        if: ${{ env.NFSU2_PRIVATE_RELEASE_SIGNING == 'true' }}
         run: |
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/nfsu2-release.jks"
           chmod 600 "$RUNNER_TEMP/nfsu2-release.jks"
           echo "NFSU2_RELEASE_KEYSTORE_PATH=$RUNNER_TEMP/nfsu2-release.jks" >> "$GITHUB_ENV"
-          echo "NFSU2_PRIVATE_RELEASE_SIGNING=1" >> "$GITHUB_ENV"
 
       - name: Build NFSU2 Release APK
         env:
@@ -155,7 +157,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/') && env.NFSU2_PRIVATE_RELEASE_SIGNING == '1'
+        if: startsWith(github.ref, 'refs/tags/') && env.NFSU2_PRIVATE_RELEASE_SIGNING == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
