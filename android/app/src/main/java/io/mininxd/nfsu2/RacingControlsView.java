@@ -64,6 +64,8 @@ final class RacingControlsView extends View {
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint line = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint text = new Paint(Paint.ANTI_ALIAS_FLAG);
+    // Subtle author watermark; kept independent from control opacity and edit mode.
+    private final Paint watermarkPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Path path = new Path();
 
     private final ArrayList<Control> controls = new ArrayList<>();
@@ -262,6 +264,11 @@ final class RacingControlsView extends View {
 
         text.setTextAlign(Paint.Align.CENTER);
         text.setTypeface(Typeface.create("sans-serif", Typeface.BOLD_ITALIC));
+        watermarkPaint.setColor(0x66FFFFFF);
+        watermarkPaint.setTextAlign(Paint.Align.CENTER);
+        watermarkPaint.setTextSize(11f);
+        watermarkPaint.setTypeface(Typeface.create("sans-serif", Typeface.BOLD_ITALIC));
+        watermarkPaint.setShadowLayer(2f, 0f, 1f, 0x88000000);
     }
 
     private float getButtonScaleMultiplier() {
@@ -521,6 +528,10 @@ final class RacingControlsView extends View {
             drawToolbarButton(canvas, new RectF(cx - 65, ty + 50, cx + 65, ty + 88), "OPTIONS", 0xE0162534, 0xAA5AC8FA, 0xFF5AC8FA);
             drawToolbarButton(canvas, new RectF(cx + 75, ty + 50, cx + 205, ty + 88), "OPACITY (" + Math.round(controlOpacity * 100) + "%)", 0xE0162534, 0xAA5AC8FA, 0xFF5AC8FA);
         }
+        // Discreet creator watermark, positioned at bottom-center to avoid the top HUD.
+        float watermarkWidth = getWidth() / scale;
+        float watermarkHeight = getHeight() / scale;
+        canvas.drawText("Yogie Clharava", watermarkWidth * 0.5f, watermarkHeight - 12f, watermarkPaint);
         canvas.restore();
     }
 
