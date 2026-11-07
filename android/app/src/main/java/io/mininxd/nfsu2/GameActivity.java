@@ -491,16 +491,105 @@ public final class GameActivity extends NativeActivity {
     /** Opens the in-game Mod Menu status panel. Runtime cheats remain unavailable until verified hooks are implemented. */
     private void showModMenu() {
         if (isFinishing() || isDestroyed()) return;
-        runOnUiThread(() -> new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-                .setTitle("NFSU2 Revived — Mod Menu")
-                .setMessage("MOD MENU PROTOTYPE\n\n"
-                        + "Auto Shift — Not active (shift timing hook not verified)\n"
-                        + "Infinite NOS — Not active (race NOS hook not verified)\n"
-                        + "Race Assist — Not active\n"
-                        + "Perfect Drift — Not active (drift scoring hook not verified)\n\n"
-                        + "No gameplay memory is modified by this panel. Career saves, graphics and textures are left untouched.")
-                .setPositiveButton("Close", null)
-                .show());
+        runOnUiThread(() -> {
+            ModMenuConfig.Settings settings = ModMenuConfig.load(this);
+            LinearLayout form = new LinearLayout(this);
+            form.setOrientation(LinearLayout.VERTICAL);
+            form.setPadding(dp(20), dp(8), dp(20), dp(8));
+
+            TextView status = new TextView(this);
+            status.setText("Configuration panel only. Gameplay hooks are not active yet.");
+            status.setTextSize(13);
+            form.addView(status);
+
+            CheckBox master = new CheckBox(this);
+            master.setText("Master Cheat — enable saved mod options");
+            master.setChecked(settings.master);
+            form.addView(master);
+
+            CheckBox autoShift = new CheckBox(this);
+            autoShift.setText("Auto Shift — Perfect Shift (hook pending)");
+            autoShift.setChecked(settings.autoPerfectShift);
+            form.addView(autoShift);
+
+            TextView rpmLabel = new TextView(this);
+            rpmLabel.setText("Auto Shift target: " + settings.autoShiftRpm + " RPM");
+            rpmLabel.setPadding(0, dp(4), 0, 0);
+            form.addView(rpmLabel);
+
+            android.widget.SeekBar rpm = new android.widget.SeekBar(this);
+            rpm.setMax(ModMenuConfig.MAX_SHIFT_RPM - ModMenuConfig.MIN_SHIFT_RPM);
+            rpm.setProgress(settings.autoShiftRpm - ModMenuConfig.MIN_SHIFT_RPM);
+            rpm.setEnabled(settings.autoPerfectShift);
+            rpm.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener() {
+                @Override public void onProgressChanged(android.widget.SeekBar bar, int progress, boolean fromUser) {
+                    rpmLabel.setText("Auto Shift target: "
+                            + (ModMenuConfig.MIN_SHIFT_RPM + progress) + " RPM");
+                }
+                @Override public void onStartTrackingTouch(android.widget.SeekBar bar) {}
+                @Override public void onStopTrackingTouch(android.widget.SeekBar bar) {}
+            });
+            autoShift.setOnCheckedChangeListener((button, checked) -> rpm.setEnabled(checked));
+            form.addView(rpm);
+
+            CheckBox infiniteNos = new CheckBox(this);
+            infiniteNos.setText("Infinite NOS — hook pending");
+            infiniteNos.setChecked(settings.infiniteNos);
+            form.addView(infiniteNos);
+
+            CheckBox raceAssist = new CheckBox(this);
+            raceAssist.setText("Race Assist — hook pending");
+            raceAssist.setChecked(settings.raceAssist);
+            form.addView(raceAssist);
+
+            CheckBox perfectDrift = new CheckBox(this);
+            perfectDrift.setText("Perfect Drift — hook pending");
+            perfectDrift.setChecked(settings.perfectDrift);
+            form.addView(perfectDrift);
+
+            TextView filePath = new TextView(this);
+            filePath.setText("Settings file (separate from Career save):\n"
+                    + ModMenuConfig.file(this).getAbsolutePath());
+            filePath.setTextSize(11);
+            filePath.setPadding(0, dp(8), 0, 0);
+            form.addView(filePath);
+
+            TextView safety = new TextView(this);
+            safety.setText("Saving these switches only writes modmenu.ini. No race memory, Career data, graphics or textures are changed by this prototype.");
+            safety.setTextSize(12);
+            safety.setPadding(0, dp(8), 0, 0);
+            form.addView(safety);
+
+            android.widget.ScrollView scroll = new android.widget.ScrollView(this);
+            scroll.addView(form);
+            AlertDialog dialog = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                    .setTitle("NFSU2 Revived — Mod Menu")
+                    .setView(scroll)
+                    .setPositiveButton("Save settings", (d, which) -> {
+                        settings.master = master.isChecked();
+                        settings.autoPerfectShift = autoShift.isChecked();
+                        settings.autoShiftRpm = ModMenuConfig.MIN_SHIFT_RPM + rpm.getProgress();
+                        settings.infiniteNos = infiniteNos.isChecked();
+                        settings.raceAssist = raceAssist.isChecked();
+                        settings.perfectDrift = perfectDrift.isChecked();
+                        if (ModMenuConfig.save(this, settings)) {
+                            Toast.makeText(this, "Mod Menu settings saved. Gameplay hooks are still pending.", Toast.LENGTH_LONG).show();
+                        } else {
+                            Toast.makeText(this, "Could not save modmenu.ini. Check access to Internal storage/nfsu2.", Toast.LENGTH_LONG).show();
+                        }
+                    })
+                    .setNeutralButton("All OFF", (d, which) -> {
+                        ModMenuConfig.Settings disabled = new ModMenuConfig.Settings();
+                        if (ModMenuConfig.save(this, disabled)) {
+                            Toast.makeText(this, "All Mod Menu options are OFF.", Toast.LENGTH_SHORT).show();
+                        } else {
+                            Toast.makeText(this, "Could not save modmenu.ini.", Toast.LENGTH_LONG).show();
+                        }
+                    })
+                    .setNegativeButton("Close", null)
+                    .create();
+            dialog.show();
+        });
     }
 
     private void applyCheatCodes(java.util.List<String> codes) {
