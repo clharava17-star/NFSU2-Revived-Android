@@ -639,6 +639,7 @@ public final class GameActivity extends NativeActivity {
                     Toast.makeText(this, "Could not save modmenu.ini. Check access to Internal storage/nfsu2.", Toast.LENGTH_LONG).show();
                 }
             });
+            dialog.show();
         });
     }
 
