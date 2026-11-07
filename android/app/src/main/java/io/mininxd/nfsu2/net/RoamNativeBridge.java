@@ -42,6 +42,8 @@ public final class RoamNativeBridge {
     public static native void nativeRoamHorn(boolean held);
     public static native void nativeSetFrameLimit(int fps);
     public static native int[] nativeGetActionKeys();
+    /** Read-only snapshot: [valid, gameState, speedMps, rpm, throttle, gearRaw]. */
+    public static native float[] nativeGetGameTelemetry();
 
     /**
      * Called from C roam_android.c when the engine wants to transmit a packet.
