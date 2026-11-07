@@ -32,6 +32,10 @@ The existing free-roam companion data must not be assumed to expose the original
 - No cheat is marked complete until it is built and tested in the actual Android game.
 - Release signing uses a private key controlled by the owner; never commit signing keys or passwords.
 
+## App identity
+
+The Mod Edition uses a distinct Android application ID, `io.mininxd.nfsu2.modmenu`, and a distinct launcher label. This avoids replacing the original NFSU2 Revived installation during prototype testing. The game-data root remains the existing external-storage `NFSU2` / `nfsu2` folder resolved by `LauncherActivity.gameRoot()`; make a backup before testing both installations against the same career files.
+
 ## Signing security
 
 The upstream public branch contains a tracked Android release keystore and hard-coded signing credentials in its Gradle build file. Treat that signing material as compromised; do not reuse it for Mod Edition or future production updates.
