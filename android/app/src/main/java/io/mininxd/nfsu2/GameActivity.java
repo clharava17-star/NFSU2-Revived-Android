@@ -493,11 +493,11 @@ public final class GameActivity extends NativeActivity {
         if (isFinishing() || isDestroyed()) return;
         runOnUiThread(() -> new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
                 .setTitle("NFSU2 Revived — Mod Menu")
-                .setMessage("MOD MENU PROTOTYPE\\n\\n"
-                        + "Auto Shift — Not active (shift timing hook not verified)\\n"
-                        + "Infinite NOS — Not active (race NOS hook not verified)\\n"
-                        + "Race Assist — Not active\\n"
-                        + "Perfect Drift — Not active (drift scoring hook not verified)\\n\\n"
+                .setMessage("MOD MENU PROTOTYPE\n\n"
+                        + "Auto Shift — Not active (shift timing hook not verified)\n"
+                        + "Infinite NOS — Not active (race NOS hook not verified)\n"
+                        + "Race Assist — Not active\n"
+                        + "Perfect Drift — Not active (drift scoring hook not verified)\n\n"
                         + "No gameplay memory is modified by this panel. Career saves, graphics and textures are left untouched.")
                 .setPositiveButton("Close", null)
                 .show());
