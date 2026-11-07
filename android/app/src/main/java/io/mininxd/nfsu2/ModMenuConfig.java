@@ -97,12 +97,34 @@ final class ModMenuConfig {
             temp.delete();
             return false;
         }
-        if (target.exists() && !target.delete()) {
+        // Preserve the previous settings file until the new file has been renamed into place.
+        File backup = new File(parent, target.getName() + ".bak");
+        if (backup.exists() && !backup.delete()) {
             //noinspection ResultOfMethodCallIgnored
             temp.delete();
             return false;
         }
-        return temp.renameTo(target);
+        boolean hadTarget = target.exists();
+        if (hadTarget && !target.renameTo(backup)) {
+            //noinspection ResultOfMethodCallIgnored
+            temp.delete();
+            return false;
+        }
+        if (!temp.renameTo(target)) {
+            if (hadTarget) {
+                // Best-effort rollback; never delete the only existing copy.
+                //noinspection ResultOfMethodCallIgnored
+                backup.renameTo(target);
+            }
+            //noinspection ResultOfMethodCallIgnored
+            temp.delete();
+            return false;
+        }
+        if (hadTarget) {
+            //noinspection ResultOfMethodCallIgnored
+            backup.delete();
+        }
+        return true;
     }
 
     private static boolean parseBoolean(String value, boolean fallback) {
