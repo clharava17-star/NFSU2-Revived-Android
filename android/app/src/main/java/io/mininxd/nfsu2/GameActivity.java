@@ -560,6 +560,15 @@ public final class GameActivity extends NativeActivity {
             safety.setPadding(0, dp(8), 0, 0);
             form.addView(safety);
 
+            TextView watermark = new TextView(this);
+            watermark.setText("Yogie Clharava");
+            watermark.setTextSize(11);
+            watermark.setTextColor(0x66808080);
+            watermark.setGravity(Gravity.END);
+            watermark.setPadding(0, dp(10), 0, dp(2));
+            watermark.setTypeface(android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.BOLD_ITALIC));
+            form.addView(watermark);
+
             android.widget.ScrollView scroll = new android.widget.ScrollView(this);
             scroll.addView(form);
             AlertDialog dialog = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
