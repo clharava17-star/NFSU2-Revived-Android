@@ -20,7 +20,7 @@ android {
     namespace 'io.mininxd.nfsu2'
     compileSdk 35
     defaultConfig {
-        applicationId 'io.mininxd.nfsu2'
+        applicationId 'io.mininxd.nfsu2.modmenu'
         minSdk 28
         targetSdk 35
         versionCode 73
