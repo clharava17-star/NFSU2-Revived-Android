@@ -502,6 +502,37 @@ public final class GameActivity extends NativeActivity {
             status.setTextSize(13);
             form.addView(status);
 
+            TextView telemetryText = new TextView(this);
+            telemetryText.setText("Live telemetry: tap Read while driving in-game.");
+            telemetryText.setTextSize(12);
+            telemetryText.setPadding(0, dp(8), 0, dp(2));
+            form.addView(telemetryText);
+
+            android.widget.Button readTelemetryButton = new android.widget.Button(this);
+            readTelemetryButton.setText("Read live telemetry");
+            readTelemetryButton.setAllCaps(false);
+            readTelemetryButton.setOnClickListener(button -> {
+                try {
+                    if (!io.mininxd.nfsu2.net.RoamNativeBridge.isLoaded()) {
+                        telemetryText.setText("Telemetry bridge is not loaded.");
+                        return;
+                    }
+                    float[] t = io.mininxd.nfsu2.net.RoamNativeBridge.nativeGetGameTelemetry();
+                    if (t == null || t.length < 6 || t[0] < 0.5f) {
+                        telemetryText.setText("No valid race telemetry. Enter gameplay and try again.");
+                        return;
+                    }
+                    int rawGear = Math.round(t[5]);
+                    String gearLabel = rawGear == 0 ? "R" : (rawGear == 1 ? "N" : String.valueOf(rawGear - 1));
+                    telemetryText.setText(String.format(java.util.Locale.US,
+                            "Live: %.0f RPM  |  Gear %s  |  %.0f km/h  |  Throttle %.0f%%",
+                            t[3], gearLabel, t[2] * 3.6f, t[4] * 100.0f));
+                } catch (Throwable error) {
+                    telemetryText.setText("Telemetry read failed: " + error.getClass().getSimpleName());
+                }
+            });
+            form.addView(readTelemetryButton);
+
             CheckBox master = new CheckBox(this);
             master.setText("Master Cheat — enable saved mod options");
             master.setChecked(settings.master);
