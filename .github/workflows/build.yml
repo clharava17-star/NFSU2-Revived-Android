@@ -6,6 +6,7 @@ on:
     tags: [ 'v*' ]
   pull_request:
     branches: [ main ]
+    types: [opened, reopened, ready_for_review]
   workflow_dispatch:
 
 permissions:
