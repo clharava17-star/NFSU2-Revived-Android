@@ -32,6 +32,18 @@ The existing free-roam companion data must not be assumed to expose the original
 - No cheat is marked complete until it is built and tested in the actual Android game.
 - Release signing uses a private key controlled by the owner; never commit signing keys or passwords.
 
+## Signing security
+
+The upstream public branch contains a tracked Android release keystore and hard-coded signing credentials in its Gradle build file. Treat that signing material as compromised; do not reuse it for Mod Edition or future production updates.
+
+This feature branch removes the tracked `android/app/release.jks` from its proposed changes and changes Gradle to read a private keystore path and passwords from environment variables. GitHub Actions accepts these repository secrets:
+- `NFSU2_RELEASE_KEYSTORE_BASE64`
+- `NFSU2_RELEASE_STORE_PASSWORD`
+- `NFSU2_RELEASE_KEY_ALIAS`
+- `NFSU2_RELEASE_KEY_PASSWORD`
+
+When those secrets are absent, the workflow uses the generated Android debug key for test builds only. A debug-signed test APK is not a production update for an existing installation. The fork's `main` branch and earlier Git history still retain upstream content until this draft PR is reviewed and merged; removing a file from the current tree does not erase its historic blob.
+
 ## Current status — v0.2 prototype
 
 Implemented on `feature/mod-menu-v0.2`:
