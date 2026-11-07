@@ -53,20 +53,26 @@ When those secrets are absent, the workflow uses the generated Android debug key
 Implemented on `feature/mod-menu-v0.2`:
 - The existing HUD has a dedicated MOD control wired to `GameActivity.showModMenu()`.
 - The panel exposes Master, Auto Shift, Infinite NOS, Race Assist, and Perfect Drift settings.
-- Auto Shift target RPM is configurable from 7,000 to 11,000 RPM.
+- Auto Shift target RPM is configurable from 5,000 to 7,500 RPM (default 7,000), aligned with the known NFSU2 1.2 engine RPM range; final per-car calibration is still required.
 - Settings are stored separately at `<gameRoot>/mods/NFSU2_ModMenu/modmenu.ini`.
 - All options default OFF. Saving uses a temporary file and a backup/rollback path to avoid deleting a prior configuration on a failed write.
 - The MOD HUD control remains available when the touch-control layout is hidden.
-- A low-opacity `Yogie Clharava` watermark is drawn at the bottom-center of the touch HUD and in the Mod Menu panel footer.
+- `Yogie Clharava` appears only in the Mod Menu bottom action bar, centered between `All OFF` and the `Close` / `Save settings` buttons. No watermark is drawn on the normal gameplay HUD.
+
+Implemented as read-only diagnostic groundwork:
+- The Android free-roam companion publishes a guarded snapshot of game-flow state, player-car speed, RPM, throttle and raw gearbox value from the matching NFSU2 v1.2 guest address space.
+- The Mod Menu exposes a manual **Read live telemetry** action. It does not write to the game.
+- The snapshot is copied under a mutex; pointers are checked against committed guest-memory ranges before dereference.
+- The raw gear counter is interpreted as 0 reverse, 1 neutral, 2 first gear, and so on.
 
 Not implemented:
 - No cheat currently changes live gameplay.
-- Auto Shift / Perfect Shift has no verified shift-judgement hook.
+- Auto Shift / Perfect Shift still needs a verified drag-event gate and exact in-game shift timing window. Do not assume a generic RPM threshold equals the game's Perfect Shift judgement.
 - Infinite NOS has no verified race NOS hook.
 - Race Assist has no verified opponent or race-result hook.
 - Perfect Drift has no verified drift scoring or vehicle-control hook.
 
 Validation:
 - Source integration points and branch contents were inspected through GitHub.
-- The PR has no reported GitHub Actions run/status for the latest commit yet; APK compilation and device testing remain outstanding.
+- The latest telemetry and footer changes require a fresh GitHub Actions build and on-device verification. Earlier successful APK artifacts do not contain these latest changes.
 - Do not merge this draft or distribute it as a functioning cheat APK until the Android build and on-device regression tests pass.
