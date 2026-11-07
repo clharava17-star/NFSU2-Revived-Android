@@ -498,7 +498,7 @@ public final class GameActivity extends NativeActivity {
             form.setPadding(dp(20), dp(8), dp(20), dp(8));
 
             TextView status = new TextView(this);
-            status.setText("Configuration panel only. Gameplay hooks are not active yet.");
+            status.setText("Cheats are not active yet. The telemetry check below is read-only.");
             status.setTextSize(13);
             form.addView(status);
 
@@ -519,7 +519,7 @@ public final class GameActivity extends NativeActivity {
                     }
                     float[] t = io.mininxd.nfsu2.net.RoamNativeBridge.nativeGetGameTelemetry();
                     if (t == null || t.length < 6 || t[0] < 0.5f) {
-                        telemetryText.setText("No valid race telemetry. Enter gameplay and try again.");
+                        telemetryText.setText("No live telemetry. Enter driving gameplay and try again.");
                         return;
                     }
                     int rawGear = Math.round(t[5]);
