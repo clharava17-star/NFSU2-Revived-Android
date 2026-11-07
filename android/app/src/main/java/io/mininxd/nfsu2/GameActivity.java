@@ -560,44 +560,85 @@ public final class GameActivity extends NativeActivity {
             safety.setPadding(0, dp(8), 0, 0);
             form.addView(safety);
 
+            android.widget.ScrollView scroll = new android.widget.ScrollView(this);
+            scroll.addView(form);
+
+            // Custom bottom action bar: All OFF | centered author watermark | Close / Save.
+            LinearLayout root = new LinearLayout(this);
+            root.setOrientation(LinearLayout.VERTICAL);
+            root.addView(scroll, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+            LinearLayout footer = new LinearLayout(this);
+            footer.setOrientation(LinearLayout.HORIZONTAL);
+            footer.setGravity(Gravity.CENTER_VERTICAL);
+            footer.setPadding(dp(8), dp(4), dp(8), dp(4));
+
+            android.widget.Button allOffButton = new android.widget.Button(this);
+            allOffButton.setText("All OFF");
+            allOffButton.setAllCaps(false);
+            allOffButton.setMinWidth(0);
+            allOffButton.setPadding(dp(8), 0, dp(8), 0);
+            footer.addView(allOffButton, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
             TextView watermark = new TextView(this);
             watermark.setText("Yogie Clharava");
             watermark.setTextSize(11);
-            watermark.setTextColor(0x66808080);
-            watermark.setGravity(Gravity.END);
-            watermark.setPadding(0, dp(10), 0, dp(2));
-            watermark.setTypeface(android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.BOLD_ITALIC));
-            form.addView(watermark);
+            watermark.setTextColor(0x77808080);
+            watermark.setGravity(Gravity.CENTER);
+            watermark.setTypeface(android.graphics.Typeface.create(
+                    "sans-serif", android.graphics.Typeface.BOLD_ITALIC));
+            footer.addView(watermark, new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-            android.widget.ScrollView scroll = new android.widget.ScrollView(this);
-            scroll.addView(form);
+            android.widget.Button closeButton = new android.widget.Button(this);
+            closeButton.setText("Close");
+            closeButton.setAllCaps(false);
+            closeButton.setMinWidth(0);
+            closeButton.setPadding(dp(8), 0, dp(8), 0);
+            footer.addView(closeButton, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+            android.widget.Button saveButton = new android.widget.Button(this);
+            saveButton.setText("Save settings");
+            saveButton.setAllCaps(false);
+            saveButton.setMinWidth(0);
+            saveButton.setPadding(dp(8), 0, dp(8), 0);
+            footer.addView(saveButton, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+            root.addView(footer, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
             AlertDialog dialog = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
                     .setTitle("NFSU2 Revived — Mod Menu")
-                    .setView(scroll)
-                    .setPositiveButton("Save settings", (d, which) -> {
-                        settings.master = master.isChecked();
-                        settings.autoPerfectShift = autoShift.isChecked();
-                        settings.autoShiftRpm = ModMenuConfig.MIN_SHIFT_RPM + rpm.getProgress();
-                        settings.infiniteNos = infiniteNos.isChecked();
-                        settings.raceAssist = raceAssist.isChecked();
-                        settings.perfectDrift = perfectDrift.isChecked();
-                        if (ModMenuConfig.save(this, settings)) {
-                            Toast.makeText(this, "Mod Menu settings saved. Gameplay hooks are still pending.", Toast.LENGTH_LONG).show();
-                        } else {
-                            Toast.makeText(this, "Could not save modmenu.ini. Check access to Internal storage/nfsu2.", Toast.LENGTH_LONG).show();
-                        }
-                    })
-                    .setNeutralButton("All OFF", (d, which) -> {
-                        ModMenuConfig.Settings disabled = new ModMenuConfig.Settings();
-                        if (ModMenuConfig.save(this, disabled)) {
-                            Toast.makeText(this, "All Mod Menu options are OFF.", Toast.LENGTH_SHORT).show();
-                        } else {
-                            Toast.makeText(this, "Could not save modmenu.ini.", Toast.LENGTH_LONG).show();
-                        }
-                    })
-                    .setNegativeButton("Close", null)
+                    .setView(root)
                     .create();
-            dialog.show();
+            allOffButton.setOnClickListener(button -> {
+                ModMenuConfig.Settings disabled = new ModMenuConfig.Settings();
+                if (ModMenuConfig.save(this, disabled)) {
+                    Toast.makeText(this, "All Mod Menu options are OFF.", Toast.LENGTH_SHORT).show();
+                    dialog.dismiss();
+                } else {
+                    Toast.makeText(this, "Could not save modmenu.ini.", Toast.LENGTH_LONG).show();
+                }
+            });
+            closeButton.setOnClickListener(button -> dialog.dismiss());
+            saveButton.setOnClickListener(button -> {
+                settings.master = master.isChecked();
+                settings.autoPerfectShift = autoShift.isChecked();
+                settings.autoShiftRpm = ModMenuConfig.MIN_SHIFT_RPM + rpm.getProgress();
+                settings.infiniteNos = infiniteNos.isChecked();
+                settings.raceAssist = raceAssist.isChecked();
+                settings.perfectDrift = perfectDrift.isChecked();
+                if (ModMenuConfig.save(this, settings)) {
+                    Toast.makeText(this, "Mod Menu settings saved. Gameplay hooks are still pending.", Toast.LENGTH_LONG).show();
+                    dialog.dismiss();
+                } else {
+                    Toast.makeText(this, "Could not save modmenu.ini. Check access to Internal storage/nfsu2.", Toast.LENGTH_LONG).show();
+                }
+            });
         });
     }
 
