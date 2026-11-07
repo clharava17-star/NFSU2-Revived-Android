@@ -15,9 +15,9 @@ import java.nio.charset.StandardCharsets;
  * The current milestone persists options only; native cheat handlers are added separately.
  */
 final class ModMenuConfig {
-    static final int MIN_SHIFT_RPM = 7000;
-    static final int MAX_SHIFT_RPM = 11000;
-    static final int DEFAULT_SHIFT_RPM = 9000;
+    static final int MIN_SHIFT_RPM = 5000;
+    static final int MAX_SHIFT_RPM = 7500;
+    static final int DEFAULT_SHIFT_RPM = 7000;
 
     static final class Settings {
         boolean master;
