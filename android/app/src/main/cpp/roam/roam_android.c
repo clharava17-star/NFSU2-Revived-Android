@@ -150,7 +150,7 @@ static void mod_telemetry_publish(const jfloat values[6]) {
 }
 
 static void mod_telemetry_update(void) {
-    jfloat next[6] = {0, 0, 0, 0, 0, 0};
+    jfloat next[6] = {0, 0, 0, 0, 0, -1.0f};
     const uint32_t flow_va = 0x008654A4u;
     const uint32_t player_va = 0x008900ACu;
 
