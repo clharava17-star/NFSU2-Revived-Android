@@ -533,6 +533,78 @@ public final class GameActivity extends NativeActivity {
             });
             form.addView(readTelemetryButton);
 
+            TextView calibrationText = new TextView(this);
+            calibrationText.setText("Shift calibration: start this before a Drag event, then shift manually. This only observes RPM and gear.");
+            calibrationText.setTextSize(12);
+            calibrationText.setPadding(0, dp(6), 0, dp(2));
+            form.addView(calibrationText);
+
+            android.widget.Button calibrationButton = new android.widget.Button(this);
+            calibrationButton.setText("Start shift calibration");
+            calibrationButton.setAllCaps(false);
+            form.addView(calibrationButton);
+
+            final android.os.Handler calibrationHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+            final boolean[] calibrationRunning = {false};
+            final int[] previousGear = {-1};
+            final float[] peakRpm = {0f};
+            final java.util.ArrayList<Integer> observedShiftPeaks = new java.util.ArrayList<>();
+            final Runnable[] calibrationPoll = new Runnable[1];
+            calibrationPoll[0] = () -> {
+                if (!calibrationRunning[0]) return;
+                try {
+                    if (!io.mininxd.nfsu2.net.RoamNativeBridge.isLoaded()) {
+                        calibrationText.setText("Calibration stopped: telemetry bridge unavailable.");
+                        calibrationRunning[0] = false;
+                        calibrationButton.setText("Start shift calibration");
+                        return;
+                    }
+                    float[] sample = io.mininxd.nfsu2.net.RoamNativeBridge.nativeGetGameTelemetry();
+                    if (sample == null || sample.length < 6 || sample[0] < 0.5f) {
+                        previousGear[0] = -1;
+                        peakRpm[0] = 0f;
+                        calibrationText.setText("Waiting for valid driving telemetry...");
+                    } else {
+                        int gear = Math.round(sample[5]);
+                        float currentRpm = sample[3];
+                        if (previousGear[0] < 0 || gear < 2) {
+                            previousGear[0] = gear;
+                            peakRpm[0] = currentRpm;
+                        } else if (gear > previousGear[0]) {
+                            if (peakRpm[0] >= 500f) {
+                                observedShiftPeaks.add(Math.round(peakRpm[0]));
+                                while (observedShiftPeaks.size() > 8) observedShiftPeaks.remove(0);
+                            }
+                            previousGear[0] = gear;
+                            peakRpm[0] = currentRpm;
+                        } else if (gear != previousGear[0]) {
+                            previousGear[0] = gear;
+                            peakRpm[0] = currentRpm;
+                        } else {
+                            peakRpm[0] = Math.max(peakRpm[0], currentRpm);
+                        }
+                        if (observedShiftPeaks.isEmpty()) {
+                            calibrationText.setText(String.format(java.util.Locale.US,
+                                    "Capturing... Gear %d | current peak %.0f RPM. Shift manually during a Drag event.",
+                                    Math.max(0, gear - 1), peakRpm[0]));
+                        } else {
+                            int min = Integer.MAX_VALUE, max = 0, total = 0;
+                            for (int value : observedShiftPeaks) {
+                                min = Math.min(min, value);
+                                max = Math.max(max, value);
+                                total += value;
+                            }
+                            calibrationText.setText(String.format(java.util.Locale.US,
+                                    "Captured %d upshifts | observed peak %d–%d RPM | average %d RPM. Diagnostic only; not the game's Perfect Shift window.",
+                                    observedShiftPeaks.size(), min, max, total / observedShiftPeaks.size()));
+                        }
+                    }
+                } catch (Throwable error) {
+                    calibrationText.setText("Calibration read failed: " + error.getClass().getSimpleName());
+                }
+                if (calibrationRunning[0]) calibrationHandler.postDelayed(calibrationPoll[0], 50);
+            };
+
             CheckBox master = new CheckBox(this);
             master.setText("Master Cheat — enable saved mod options");
             master.setChecked(settings.master);
@@ -646,6 +718,28 @@ public final class GameActivity extends NativeActivity {
                     .setTitle("NFSU2 Revived — Mod Menu")
                     .setView(root)
                     .create();
+            calibrationButton.setOnClickListener(button -> {
+                if (calibrationRunning[0]) {
+                    calibrationRunning[0] = false;
+                    calibrationHandler.removeCallbacks(calibrationPoll[0]);
+                    calibrationButton.setText("Start shift calibration");
+                    calibrationText.setText(observedShiftPeaks.isEmpty()
+                            ? "No upshift samples captured. Try again during a Drag event."
+                            : calibrationText.getText());
+                    return;
+                }
+                observedShiftPeaks.clear();
+                previousGear[0] = -1;
+                peakRpm[0] = 0f;
+                calibrationRunning[0] = true;
+                calibrationButton.setText("Stop shift calibration");
+                calibrationText.setText("Waiting for valid driving telemetry...");
+                calibrationHandler.post(calibrationPoll[0]);
+            });
+            dialog.setOnDismissListener(ignored -> {
+                calibrationRunning[0] = false;
+                calibrationHandler.removeCallbacks(calibrationPoll[0]);
+            });
             allOffButton.setOnClickListener(button -> {
                 ModMenuConfig.Settings disabled = new ModMenuConfig.Settings();
                 if (ModMenuConfig.save(this, disabled)) {
