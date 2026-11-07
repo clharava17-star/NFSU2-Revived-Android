@@ -2,7 +2,7 @@ name: Build Android APK
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, 'feature/mod-menu-v0.2' ]
     tags: [ 'v*' ]
   pull_request:
     branches: [ main ]
@@ -119,7 +119,20 @@ jobs:
           mkdir -p android/app/src/main/assets
           echo "$GAMEFILES_URL" > android/app/src/main/assets/gamefiles_url.txt
 
+      - name: Prepare private release signing key (optional)
+        env:
+          KEYSTORE_BASE64: ${{ secrets.NFSU2_RELEASE_KEYSTORE_BASE64 }}
+        if: ${{ env.KEYSTORE_BASE64 != '' }}
+        run: |
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/nfsu2-release.jks"
+          chmod 600 "$RUNNER_TEMP/nfsu2-release.jks"
+          echo "NFSU2_RELEASE_KEYSTORE_PATH=$RUNNER_TEMP/nfsu2-release.jks" >> "$GITHUB_ENV"
+
       - name: Build NFSU2 Release APK
+        env:
+          NFSU2_RELEASE_STORE_PASSWORD: ${{ secrets.NFSU2_RELEASE_STORE_PASSWORD }}
+          NFSU2_RELEASE_KEY_ALIAS: ${{ secrets.NFSU2_RELEASE_KEY_ALIAS }}
+          NFSU2_RELEASE_KEY_PASSWORD: ${{ secrets.NFSU2_RELEASE_KEY_PASSWORD }}
         run: |
           cd android
           chmod +x gradlew
