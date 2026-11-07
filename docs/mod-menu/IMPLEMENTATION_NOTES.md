@@ -48,6 +48,22 @@ This feature branch removes the tracked `android/app/release.jks` from its propo
 
 When those secrets are absent, the workflow uses the generated Android debug key for test builds only. A debug-signed test APK is not a production update for an existing installation. The fork's `main` branch and earlier Git history still retain upstream content until this draft PR is reviewed and merged; removing a file from the current tree does not erase its historic blob.
 
+## Telemetry source and limits
+
+The current read-only snapshot mirrors the documented NFSU2 v1.2 US player-car layout used by the Android port:
+- Player pointer at guest VA `0x8900AC`; player + `0x04` points to the car mirror.
+- Mirror offsets: speed `+0x42C`, throttle `+0x438`, RPM `+0x440`.
+- Gearbox snapshot: mirror + `0x34` -> `+0x18`; raw gear at gearbox + `0x34` (0 reverse, 1 neutral, 2 first gear, etc.).
+- Game-flow state at `0x8654A4`; the snapshot only reports valid while the flow state is gameplay.
+- All guest pointers/ranges are checked with the runtime's committed-memory guard before reading. The UI asks for a mutex-protected copy; the Mod Menu does not write these values.
+
+Reference reverse-engineering notes for the same 4,800,512-byte v1.2 US executable:
+- [FRSModLoader Game.h](https://github.com/chrystianfarias/FRSModLoader/blob/main/src/game/Game.h)
+- [FRSModLoader Vehicle.h](https://github.com/chrystianfarias/FRSModLoader/blob/main/src/game/Vehicle.h)
+- [FRSModLoader NOTES.md — telemetry and shift notes](https://github.com/chrystianfarias/FRSModLoader/blob/main/NOTES.md)
+
+The drag shift judgement itself is not yet mapped in this Android build. Public drag references describe a brief green "Perfect Shift" indicator and say the useful shift point varies by car and installed performance parts; therefore a fixed RPM threshold alone is not proof of a perfect shift. The target-RPM slider is only a calibration setting until the actual shift window / result field is identified and validated in-game. See [NFSU2 Drag shift overview](https://nfs.fandom.com/wiki/Need_for_Speed%3A_Underground_2/Drag) and [Prima guide excerpt](https://www.scribd.com/document/343113449/Need-for-Speed-Underground-2-Prima-Official-Guide).
+
 ## Current status — v0.2 prototype
 
 Implemented on `feature/mod-menu-v0.2`:
