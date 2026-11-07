@@ -443,7 +443,7 @@ public final class GameActivity extends NativeActivity {
         statusWindow = new PopupWindow(status, ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT, false);
         statusWindow.setTouchable(false);
-        touchControls = new RacingControlsView(this, this::setTouchKey, this::showTextInput,this::showTiltOptions,this::showFrameLimitOptions);
+        touchControls = new RacingControlsView(this, this::setTouchKey, this::showTextInput, this::showTiltOptions, this::showFrameLimitOptions, this::showModMenu);
         touchControls.setPointer(GameActivity::nativePointer);
         touchControls.setOnEditingChangeListener(editing -> {
             if (diagnosticOverlay != null) {
@@ -486,6 +486,21 @@ public final class GameActivity extends NativeActivity {
     }
 
     private void stopCompanionTicker() {
+    }
+
+    /** Opens the in-game Mod Menu status panel. Runtime cheats remain unavailable until verified hooks are implemented. */
+    private void showModMenu() {
+        if (isFinishing() || isDestroyed()) return;
+        runOnUiThread(() -> new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle("NFSU2 Revived — Mod Menu")
+                .setMessage("MOD MENU PROTOTYPE\\n\\n"
+                        + "Auto Shift — Not active (shift timing hook not verified)\\n"
+                        + "Infinite NOS — Not active (race NOS hook not verified)\\n"
+                        + "Race Assist — Not active\\n"
+                        + "Perfect Drift — Not active (drift scoring hook not verified)\\n\\n"
+                        + "No gameplay memory is modified by this panel. Career saves, graphics and textures are left untouched.")
+                .setPositiveButton("Close", null)
+                .show());
     }
 
     private void applyCheatCodes(java.util.List<String> codes) {
