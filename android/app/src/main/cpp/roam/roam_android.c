@@ -130,6 +130,102 @@ int roam_android_init_symbols(void) {
     return 0;
 }
 
+/*
+ * Read-only telemetry snapshot for the Android Mod Menu.
+ *
+ * Addresses/field offsets match the NFSU2 v1.2 US executable used by this
+ * recompiled port. The values are read from guest memory only; no game memory
+ * is changed here. The UI thread reads a copy protected by a mutex so it never
+ * walks pointers while the guest simulation is updating them.
+ */
+static pthread_mutex_t g_mod_telemetry_mu = PTHREAD_MUTEX_INITIALIZER;
+static jfloat g_mod_telemetry[6] = {0, 0, 0, 0, 0, 0};
+/* [0]=valid, [1]=game-flow state, [2]=speed m/s, [3]=RPM,
+ * [4]=throttle, [5]=gear raw (0 reverse, 1 neutral, 2 first, ...). */
+
+static void mod_telemetry_publish(const jfloat values[6]) {
+    pthread_mutex_lock(&g_mod_telemetry_mu);
+    memcpy(g_mod_telemetry, values, sizeof(g_mod_telemetry));
+    pthread_mutex_unlock(&g_mod_telemetry_mu);
+}
+
+static void mod_telemetry_update(void) {
+    jfloat next[6] = {0, 0, 0, 0, 0, 0};
+    const uint32_t flow_va = 0x008654A4u;
+    const uint32_t player_va = 0x008900ACu;
+
+    if (!g_p_mem_base || !*g_p_mem_base || !g_p_esp || !*g_p_esp) {
+        mod_telemetry_publish(next);
+        return;
+    }
+    if (!rh_mem_committed(flow_va, 4) || !rh_mem_committed(player_va, 4)) {
+        mod_telemetry_publish(next);
+        return;
+    }
+
+    const uint32_t flow = MR32(flow_va);
+    next[1] = (jfloat)flow;
+    /* A car mirror is valid only in the actual gameplay state. */
+    if (flow != 6u) {
+        mod_telemetry_publish(next);
+        return;
+    }
+
+    const uint32_t player = MR32(player_va);
+    if (!player || player > 0xFFFFFFFBu || !rh_mem_committed(player + 4u, 4)) {
+        mod_telemetry_publish(next);
+        return;
+    }
+    const uint32_t car = MR32(player + 4u);
+    if (!car || car > 0xFFFFFB13u || !rh_mem_committed(car, 0x4ECu)) {
+        mod_telemetry_publish(next);
+        return;
+    }
+
+    const float speed = MRF32(car + 0x42Cu);
+    const float rpm = MRF32(car + 0x440u);
+    const float throttle = MRF32(car + 0x438u);
+    if (!isfinite(speed) || !isfinite(rpm) || !isfinite(throttle)
+            || speed < -1.0f || speed > 250.0f || rpm < 0.0f || rpm > 20000.0f
+            || throttle < -0.2f || throttle > 1.5f) {
+        mod_telemetry_publish(next);
+        return;
+    }
+
+    next[2] = speed;
+    next[3] = rpm;
+    next[4] = throttle;
+
+    /* Gearbox snapshot: mirror+0x34 -> +0x18 -> gear at +0x34. */
+    if (car <= 0xFFFFFFCBu && rh_mem_committed(car + 0x34u, 4)) {
+        const uint32_t gearbox_owner = MR32(car + 0x34u);
+        if (gearbox_owner && gearbox_owner <= 0xFFFFFFE3u
+                && rh_mem_committed(gearbox_owner + 0x18u, 4)) {
+            const uint32_t gearbox = MR32(gearbox_owner + 0x18u);
+            if (gearbox && gearbox <= 0xFFFFFFC7u
+                    && rh_mem_committed(gearbox + 0x34u, 4)) {
+                const uint32_t gear = MR32(gearbox + 0x34u);
+                if (gear <= 8u) next[5] = (jfloat)gear;
+            }
+        }
+    }
+
+    /* Require both live RPM and a plausible gearbox snapshot. */
+    next[0] = (next[3] >= 500.0f && next[5] >= 0.0f) ? 1.0f : 0.0f;
+    mod_telemetry_publish(next);
+}
+
+static jfloatArray mod_telemetry_array(JNIEnv *env) {
+    jfloat snapshot[6];
+    pthread_mutex_lock(&g_mod_telemetry_mu);
+    memcpy(snapshot, g_mod_telemetry, sizeof(snapshot));
+    pthread_mutex_unlock(&g_mod_telemetry_mu);
+
+    jfloatArray result = (*env)->NewFloatArray(env, 6);
+    if (result) (*env)->SetFloatArrayRegion(env, result, 0, 6, snapshot);
+    return result;
+}
+
 static int             g_fd = -1;
 static pthread_t       g_thr;
 static int             g_thr_on = 0;
@@ -1042,6 +1138,7 @@ static _Atomic int s_tick_in_progress = 0;
 __attribute__((visibility("default"))) void nfs_roam_frame_tick(void) {
     if (!roam_android_init_symbols() || !g_p_esp || !*g_p_esp) return;
     if (atomic_exchange(&s_tick_in_progress, 1) != 0) return;
+    mod_telemetry_update();
     pace_frame();
     static int s_perf_bound = 0;
     if (!s_perf_bound || (g_frame_count % 300) == 0) {
@@ -1418,6 +1515,12 @@ JNIEXPORT jintArray JNICALL Java_io_mininxd_nfsu2_GameActivity_nativeGetActionKe
         JNIEnv *env, jclass clazz) {
     (void)clazz;
     return get_action_keys_array(env);
+}
+
+JNIEXPORT jfloatArray JNICALL Java_io_mininxd_nfsu2_net_RoamNativeBridge_nativeGetGameTelemetry(
+        JNIEnv *env, jclass clazz) {
+    (void)clazz;
+    return mod_telemetry_array(env);
 }
 
 /* JNI Bindings for io.mininxd.nfsu2.PerformanceCores */
