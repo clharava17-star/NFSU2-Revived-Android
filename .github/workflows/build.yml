@@ -12,6 +12,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: nfsu2-android-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   NFSU2_PRIVATE_RELEASE_SIGNING: ${{ secrets.NFSU2_RELEASE_KEYSTORE_BASE64 != '' && secrets.NFSU2_RELEASE_STORE_PASSWORD != '' && secrets.NFSU2_RELEASE_KEY_ALIAS != '' && secrets.NFSU2_RELEASE_KEY_PASSWORD != '' }}
 
