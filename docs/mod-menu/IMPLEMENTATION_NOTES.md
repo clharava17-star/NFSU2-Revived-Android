@@ -73,11 +73,12 @@ Implemented on `feature/mod-menu-v0.2`:
 - Settings are stored separately at `<gameRoot>/mods/NFSU2_ModMenu/modmenu.ini`.
 - All options default OFF. Saving uses a temporary file and a backup/rollback path to avoid deleting a prior configuration on a failed write.
 - The MOD HUD control remains available when the touch-control layout is hidden.
-- `Yogie Clharava` appears only in the Mod Menu bottom action bar, centered between `All OFF` and the `Close` / `Save settings` buttons. No watermark is drawn on the normal gameplay HUD.
+- `Yogie Clharava` appears only in the Mod Menu bottom action bar, centered in the gap after `All OFF` and before `Close` / `Save settings`. No watermark is drawn on the normal gameplay HUD.
 
 Implemented as read-only diagnostic groundwork:
 - The Android free-roam companion publishes a guarded snapshot of game-flow state, player-car speed, RPM, throttle and raw gearbox value from the matching NFSU2 v1.2 guest address space.
 - The Mod Menu exposes a manual **Read live telemetry** action. It does not write to the game.
+- The Mod Menu includes an optional **Start shift calibration** capture. It observes gear increases and the peak RPM seen before each upshift during a manually driven Drag event; it is diagnostic only and does not press Shift or claim to detect the game's Perfect Shift judgement.
 - The snapshot is copied under a mutex; pointers are checked against committed guest-memory ranges before dereference.
 - The raw gear counter is interpreted as 0 reverse, 1 neutral, 2 first gear, and so on.
 
@@ -90,5 +91,5 @@ Not implemented:
 
 Validation:
 - Source integration points and branch contents were inspected through GitHub.
-- The latest telemetry and footer changes require a fresh GitHub Actions build and on-device verification. Earlier successful APK artifacts do not contain these latest changes.
+- GitHub Actions build `42421116847` succeeded for the earlier telemetry/footer baseline. The shift-calibration addition is a newer commit and requires its own fresh build and on-device test.
 - Do not merge this draft or distribute it as a functioning cheat APK until the Android build and on-device regression tests pass.
