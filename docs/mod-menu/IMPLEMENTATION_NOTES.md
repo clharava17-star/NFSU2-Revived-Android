@@ -1,24 +1,50 @@
-## Calibration result reflected by the live test
+# Universal vehicle-adaptive Auto Shift — current implementation
 
-The 2026-11-08 device recording shows that the non-focusable calibration HUD leaves the game touch controls visible, throttle telemetry reaches 100%, and the player can make manual gear changes while sampling. The overlay reports two captured loaded-throttle upshifts with peaks around 7,945–7,969 RPM. After Stop, Master Cheat and Auto Shift remain checked.
+This section supersedes the older calibration/RPM-slider notes below. Auto Shift no longer requires manual calibration for each vehicle and no longer stores one fixed RPM target in the Mod Menu.
 
-The recording also exposed a UI consistency issue: the learned RPM was written to modmenu.ini, but the already-open dialog still displayed the pre-calibration 7,000 RPM slider position. The stop action now updates both the existing dialog's slider/label and its in-memory Settings instance after a successful config write. This prevents a subsequent Save settings tap from replacing the learned RPM with the stale slider value.
+## Vehicle-specific engine range
 
-## Calibration input pass-through and preserving Auto Shift settings
+The Android companion now reads the currently driven car's own `CarTypeInfo` entry from guest memory:
 
-The on-screen calibration HUD is now a non-focusable, non-modal PopupWindow. The previous focusable popup took window focus; GameActivity's focus-loss handler then dismissed the touch-control overlay and released all active controls. The Stop button remains touchable, while gameplay controls outside the narrow banner are allowed to reach the game. The focus-loss handler also avoids tearing down controls while calibration is active.
+- `G_CARTYPES`: guest address `0x008A1CCC`
+- Current car's `CarTypeInfo*`: car object + `0x0C`
+- `CarTypeInfo` stride: `0x890` bytes
+- Engine idle RPM: `CarTypeInfo + 0x300`
+- Engine maximum/most RPM: `CarTypeInfo + 0x308`
 
-Starting calibration now persists the switches, RPM target, and currently identified Drag type/track before dismissing the menu. Previously the visible Master Cheat / Auto Shift checkboxes could be enabled without pressing Save settings; Stop then reloaded the older on-disk OFF state, making Auto Shift appear to switch itself off. Calibration now keeps those preferences instead of silently reverting them.
+These offsets and the `CarTypeInfo` stride match the existing `roam_game.c` use of `eng_idle` / `eng_max` for a car type. Reads are guarded by guest committed-memory checks and range validation.
 
-The calibration display reports throttle and the number of observed upshifts. It only records a shift peak when throttle was actually applied and the peak reached the minimum supported target RPM, ignoring idle/start-grid gear changes. A no-sample stop leaves the configured RPM untouched and preserves the saved options.
+The native telemetry snapshot is now 26 floats. Fields [0..22] keep their existing meanings; [23] is the active car type index, [24] is that type's idle RPM, and [25] is that type's maximum RPM. The JNI getter returns all 26 fields in one mutex-protected copy.
 
-## Auto Shift — calibrated timing and one-sample RPM prediction
+## Automatic shift point
 
-The Drag Auto Shift controller now uses the calibrated manual-shift peak as its shift point and estimates the RPM at the next 16 ms polling sample from the measured RPM rise. It can trigger on the first sample that reaches the learned target, or one poll earlier when RPM is already at least 90% of target and the one-sample prediction crosses it. Prediction is capped at +500 RPM to avoid a noisy sample causing a premature shift.
+The Java controller derives the target from the currently sampled vehicle on every poll:
 
-The controller is deliberately fail-closed: it requires a valid active snapshot for the exact armed event, a forward gear below sixth, a valid throttle reading above 25%, and a positive RPM value. An unavailable throttle value is not treated as acceleration. After sending Shift-Up it waits for a confirmed gear increase; it will not repeatedly send the key if the game does not accept the shift. The RPM-drop hysteresis re-arms the next gear after the shift.
+`targetRPM = idleRPM + (maxRPM - idleRPM) * 0.90`
 
-A calibration bug was also fixed: first gear no longer resets its peak on every sample. Calibration now accumulates the highest RPM while each gear is engaged, records that peak when an upshift is observed, and samples every 20 ms instead of every 50 ms. This improves the learned shift point without claiming that the game’s exact green Perfect Shift judgement has been reverse-engineered.
+The 90% range fraction is the current experimental starting point, not a verified green Perfect Shift window. It adjusts naturally when the player switches to a different car type. When the car type changes, the controller resets its pending gear confirmation, RPM slope sample, and cooldown baseline so it does not carry one vehicle's engine range into another.
+
+The existing one-sample RPM-rise prediction, throttle validation, forward-gear validation, exact armed-event check, Shift-Up key pulse, gear-change confirmation, and fail-closed behavior remain in place. If the current car's engine range cannot be read safely, Auto Shift does not issue a shift input.
+
+## User-facing behavior
+
+The Mod Menu now has one Auto Shift toggle for the armed Drag event. The RPM slider and Start Shift Calibration button have been removed. The menu explains that vehicle engine data is detected automatically; Read Live Telemetry displays the detected car type, idle RPM, maximum RPM, and derived shift point.
+
+Auto Shift remains scoped to the saved Drag event type/track, as before. That is event arming, not per-car configuration: the same enabled option adapts to each vehicle used in that event. The controller is not claimed to run outside its armed event.
+
+## Acceptance test still required
+
+The new build must be tested on-device with at least two different player cars:
+
+1. Arm Auto Shift once for a Drag event and leave Master + Auto Shift enabled.
+2. Read telemetry and note the detected car type, idle RPM, maximum RPM, and calculated target.
+3. Run the Drag event in the first car and confirm the automatic upshift is requested and the gear actually increases.
+4. Change to a different car without editing any RPM setting. Confirm the reported car type / RPM range / target changes automatically and Auto Shift continues to request shifts.
+5. Confirm the setting remains enabled and no shift input is sent when throttle is released, engine telemetry is invalid, or the active event does not match.
+
+A successful APK build proves compilation and packaging only. It does not prove the 90% threshold is optimal for every vehicle or that the game's green Perfect Shift judgement has been reverse-engineered.
+
+---
 
 # NFSU2 Revived Mod Menu — implementation notes
 
@@ -37,7 +63,7 @@ The Mod Menu originally captured the active race ID only once, before opening th
 
 Static inspection of the APK confirmed the game runtime exports `g_mem_base`, `g_esp`, `g_eax`, `g_ecx`, `g_edx`, and `recomp_lookup`, while the companion library previously had no ELF `DT_NEEDED` dependency on `libnfsu2_android.so`. Depending on Android linker namespace rules, `dlsym(RTLD_DEFAULT)` / `RTLD_NOLOAD` can fail to find symbols loaded through a separate Java class-loader namespace.
 
-The companion now declares the exported game symbols directly and the CI link step adds `-L.../jniLibs/arm64-v8a -Wl,--no-as-needed -lnfsu2_android -Wl,--as-needed -Wl,-z,defs`. This creates a load-time ELF dependency on the exact packaged game runtime. The loader must resolve these references against that runtime before the companion can load; `g_mem_base` and `g_esp` therefore cannot silently point at a second copy. `guest_is_readable` remains optional and is resolved dynamically if present. The 23-value snapshot still distinguishes the memory symbol from the mapped image and reports each JNI refresh request.
+The companion now declares the exported game symbols directly and the CI link step adds `-L.../jniLibs/arm64-v8a -Wl,--no-as-needed -lnfsu2_android -Wl,--as-needed -Wl,-z,defs`. This creates a load-time ELF dependency on the exact packaged game runtime. The loader must resolve these references against that runtime before the companion can load; `g_mem_base` and `g_esp` therefore cannot silently point at a second copy. `guest_is_readable` remains optional and is resolved dynamically if present. The 26-value snapshot distinguishes the memory symbol from the mapped image, reports each JNI refresh request, and includes the current car type's idle/max RPM range.
 
 This change only fixes the read-only telemetry access path. Auto Shift still sends no shift input until it sees a valid car snapshot and the intended active Drag event. The gear-up input uses the existing game action scan code; the RPM threshold remains experimental and is not claimed to reproduce the game's green Perfect Shift judgement.
 
@@ -46,14 +72,14 @@ This change only fixes the read-only telemetry access path. Auto Shift still sen
 
 The actual diagnostic APK was extracted and inspected with `readelf` and `strings`. Its `libnfsu2_android.so` has no `DT_NEEDED` entry for `libnfsu2_roam.so`, and no `libnfsu2_roam.so` / `nfs_roam_frame_tick` string. The GitHub Actions workflow only extracts this prebuilt game runtime from `prebuilt/lib_arm64.tar.gz`, then rebuilds `libnfsu2_roam.so` and packages the JNI libraries with Gradle; it does not run the Android CMake target. Therefore edits to `guest_runtime.cpp` and `CMakeLists.txt` are not incorporated into the current APK's main game library. This directly explains `Frame hooks 0 | live samples 0`: the packaged main runtime never calls the companion frame hook.
 
-The shipped `libnfsu2_android.so` does export the required dynamic symbols `g_mem_base`, `g_esp`, `g_eax`, `g_ecx`, `g_edx`, and `recomp_lookup`. The practical telemetry path for this workflow is therefore an on-demand read from the companion JNI: `RoamNativeBridge.nativeGetGameTelemetry()` now calls `mod_telemetry_refresh()` before returning its snapshot. That function resolves the game memory/stack symbols, updates guest-memory/ESP diagnostics, and refreshes the read-only snapshot. The existing Java Read button, shift-calibration poller, and experimental Auto Shift poller already call this getter, so all three will receive fresh data without needing to rebuild the 159 MB prebuilt game runtime.
+The shipped `libnfsu2_android.so` does export the required dynamic symbols `g_mem_base`, `g_esp`, `g_eax`, `g_ecx`, `g_edx`, and `recomp_lookup`. The practical telemetry path for this workflow is therefore an on-demand read from the companion JNI: `RoamNativeBridge.nativeGetGameTelemetry()` now calls `mod_telemetry_refresh()` before returning its snapshot. That function resolves the game memory/stack symbols, updates guest-memory/ESP diagnostics, and refreshes the read-only snapshot. The Java Read Live Telemetry action and Auto Shift poller call this getter, so both receive fresh data without needing to rebuild the 159 MB prebuilt game runtime.
 
 The `Frame hooks` counter may correctly remain zero in this APK; the `live samples` counter must increment on every JNI snapshot request. The next device acceptance test is:
 - `live samples` increases after tapping Read;
 - `memory ready` becomes true once the game image is mapped;
 - flow/player/race address readability is then reported independently;
 - if Player/Car remain missing, inspect the exact version-specific guest addresses next;
-- only when a valid active Drag snapshot is present should calibration and Auto Shift be tested.
+- only when a valid active Drag snapshot is present should Auto Shift be tested.
 
 The runtime-source/CMake direct-link experiment was reverted from the current workflow path because the APK pipeline packages the prebuilt runtime. The native companion's on-demand JNI refresh is the change actually rebuilt by CI. No Auto Shift feature should be described as Perfect Shift until the green shift judgement/timing window has been mapped and verified.
 
@@ -132,7 +158,7 @@ The current snapshot follows `roam_game.c::local_state()`:
 - Signed gear: `(int8_t)MR32(Car + 0x434)` (-1 reverse, 0 neutral, 1 first, ...).
 - Throttle: Car + `0x30` controller pointer, then controller + `0x20C`.
 
-The JNI snapshot now includes 13 values: validity, flow state, speed, RPM, throttle, signed gear, Player* validity, Car* validity, race coordinator state, race type, track ID, career-race flag, and an active-world-race flag. The latter is true only when `G_FLOW == 6` and `G_RACE.state == 4`, matching the definitions/comments in `roam_game.c`. A valid car snapshot is reported even outside an active race; calibration is still blocked until the active-race flag is true.
+The JNI snapshot now includes 26 values: the original 23 telemetry/diagnostic fields plus active car type index, current car type idle RPM, and current car type maximum RPM. The latter is true only when `G_FLOW == 6` and `G_RACE.state == 4`, matching the definitions/comments in `roam_game.c`. A valid car snapshot is reported even outside an active race; Auto Shift remains blocked until the saved event is active.
 
 ## Telemetry source and limits
 
@@ -148,19 +174,19 @@ Reference reverse-engineering notes for the same 4,800,512-byte v1.2 US executab
 - [FRSModLoader Vehicle.h](https://github.com/chrystianfarias/FRSModLoader/blob/main/src/game/Vehicle.h)
 - [FRSModLoader NOTES.md — telemetry and shift notes](https://github.com/chrystianfarias/FRSModLoader/blob/main/NOTES.md)
 
-The drag shift judgement itself is not yet mapped in this Android build. Public drag references describe a brief green "Perfect Shift" indicator and say the useful shift point varies by car and installed performance parts; therefore a fixed RPM threshold alone is not proof of a perfect shift. The target-RPM slider is only a calibration setting until the actual shift window / result field is identified and validated in-game. See [NFSU2 Drag shift overview](https://nfs.fandom.com/wiki/Need_for_Speed%3A_Underground_2/Drag) and [Prima guide excerpt](https://www.scribd.com/document/343113449/Need-for-Speed-Underground-2-Prima-Official-Guide).
+The drag shift judgement itself is not yet mapped in this Android build. The current vehicle-adaptive target uses the active car type's engine range; it does not yet read installed-part torque curves or prove the game's green Perfect Shift judgement. The 90% engine-range fraction remains experimental and requires validation across multiple cars. See [NFSU2 Drag shift overview](https://nfs.fandom.com/wiki/Need_for_Speed%3A_Underground_2/Drag) and [Prima guide excerpt](https://www.scribd.com/document/343113449/Need-for-Speed-Underground-2-Prima-Official-Guide).
 
-## Experimental Auto Shift prototype (event-scoped)
+## Universal Auto Shift controller (event-scoped)
 
-The Android controller currently uses the already-mapped Shift Up scan code and the read-only telemetry snapshot. The option can be armed only from an active in-world event: the menu captures the current race type and track ID before pausing; the values are persisted separately in `modmenu.ini`. When enabled with Master Cheat, the controller polls telemetry, requires the same flow/race state/type/track, a valid player-car snapshot, a forward gear (1–6), and throttle. It emits a short Shift Up key pulse when the configured RPM threshold is reached, enforces a 600 ms cooldown, and waits for a gear change or timeout plus RPM drop before another pulse. It stops on pause/background, menu open, or Activity destruction.
+The Android controller uses the mapped Shift Up scan code and read-only telemetry. It is armed for a saved event type/track, but it is not tied to a vehicle name or vehicle-specific RPM setting. The active vehicle's engine range is read dynamically from CarTypeInfo and the target is recalculated whenever the vehicle type changes. The controller requires the same active event, a readable vehicle engine range, a valid forward gear, positive RPM, and real throttle input. It emits a short Shift-Up pulse only at the dynamic shift point, then waits for a confirmed gear increase or timeout and RPM-drop hysteresis before another pulse. It stops on pause/background, menu open, or Activity destruction.
 
-This is an **experimental RPM-triggered upshift**, not a verified NFSU2 Perfect Shift implementation. The exact green shift window and event-type discriminator for Drag are not yet confirmed, and the user's on-device result must be tested in the exact Drag event before calling it Perfect Shift. Do not arm it for an event unless the user is in the intended Drag race and telemetry is reporting valid data. Infinite NOS, Race Assist, and Perfect Drift remain pending.
+This is an RPM-triggered upshift using the active car's own maximum RPM range. It is not a verified NFSU2 Perfect Shift implementation. The exact green shift window, installed-part torque effects, and best target fraction still require on-device validation. Infinite NOS, Race Assist, and Perfect Drift remain out of scope.
 
-## User-reported telemetry and Stop-button issue
+## Historical calibration HUD issue (superseded)
 
-The user's screenshot while the game displayed **Event Results** showed game-flow state `0`. This is not an active driving frame, so the telemetry reader correctly withholds RPM/gear instead of reporting stale values. Calibration now checks for a valid snapshot before starting and explains that the player must continue from the results screen, enter an actual Drag race, and drive before capturing samples.
+The user's screenshot while the game displayed **Event Results** showed game-flow state `0`. This is not an active driving frame, so the telemetry reader correctly withholds RPM/gear instead of reporting stale values. The current Auto Shift controller still requires the saved active Drag event before it may issue a shift.
 
-The user also reported that the calibration overlay's Stop button did not respond. The PopupWindow was originally created non-focusable. The updated implementation creates a touchable/focusable popup, gives Stop a minimum 88dp × 48dp hit target, and offers a second stop route: tapping the HUD **MOD** button while calibration is running calls the activity-owned stop routine. The Stop routine removes the polling callback and dismisses the popup.
+The earlier manual calibration popup has been removed. Auto Shift now derives its threshold from the active car's engine range, so no Stop overlay or manual per-car calibration is needed.
 
 ## Pause while Mod Menu is open
 
@@ -178,7 +204,7 @@ The initial Auto Pause build reached the Gradle build step after successful chec
 Implemented on `feature/mod-menu-v0.2`:
 - The existing HUD has a dedicated MOD control wired to `GameActivity.showModMenu()`.
 - The panel exposes Master, event-scoped experimental Auto Shift, Infinite NOS, Race Assist, and Perfect Drift settings.
-- Auto Shift target RPM is configurable from 5,000 to 11,000 RPM (default 7,000).
+- Auto Shift target RPM is calculated from the active vehicle's own idle/max RPM range; no fixed RPM slider is present.
 - Settings are stored separately at `<gameRoot>/mods/NFSU2_ModMenu/modmenu.ini`.
 - All options default OFF. Saving uses a temporary file and a backup/rollback path to avoid deleting a prior configuration on a failed write.
 - The MOD HUD control remains available when the touch-control layout is hidden.
@@ -188,7 +214,7 @@ Implemented on `feature/mod-menu-v0.2`:
 Implemented as read-only diagnostic groundwork:
 - The Android free-roam companion publishes a guarded snapshot of game-flow state, player-car speed, RPM, throttle and raw gearbox value from the matching NFSU2 v1.2 guest address space.
 - The Mod Menu exposes a manual **Read live telemetry** action. It does not write to the game. Invalid snapshots now report the observed game-flow value or explain that the car/gearbox pointer is not ready.
-- The Mod Menu includes an optional **Start shift calibration** capture. It observes gear increases and the peak RPM seen before each upshift during a manually driven Drag event; it is diagnostic only and does not press Shift or claim to detect the game's Perfect Shift judgement.
+- The previous Mod Menu included a manual **Start shift calibration** capture. It has been removed from the current implementation; Auto Shift now reads each vehicle's own engine RPM range.
 - Starting calibration now closes the modal settings dialog and opens a small non-modal status/Stop overlay, so the player can continue using touch shift controls while samples are collected. The overlay updates live and stopping it reports the captured RPM range/average.
 - The snapshot is copied under a mutex; pointers are checked against committed guest-memory ranges before dereference.
 - The raw gear counter is interpreted as 0 reverse, 1 neutral, 2 first gear, and so on.
