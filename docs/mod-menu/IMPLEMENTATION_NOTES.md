@@ -3,6 +3,10 @@
 Target base: current `main` branch (v0.15.17 at the time of audit).
 Working branch: `feature/mod-menu-v0.2`.
 
+## Auto Shift event arming from live read
+
+The Mod Menu originally captured the active race ID only once, before opening the dialog. If the JNI memory snapshot became valid a fraction later (or the first read happened after the UI opened), the Read button showed telemetry but the Save action still used the stale initial event fields. The Read button now refreshes the mutable event scope whenever a valid in-world race snapshot is read (Flow 6, race coordinator state 4, active-world-race flag set, valid car snapshot). The event type and track shown in the scope label are the same values persisted when Auto Shift is saved. The controller remains restricted to the saved event IDs.
+
 ## Auto Shift — native runtime binding
 
 Static inspection of the APK confirmed the game runtime exports `g_mem_base`, `g_esp`, `g_eax`, `g_ecx`, `g_edx`, and `recomp_lookup`, while the companion library previously had no ELF `DT_NEEDED` dependency on `libnfsu2_android.so`. Depending on Android linker namespace rules, `dlsym(RTLD_DEFAULT)` / `RTLD_NOLOAD` can fail to find symbols loaded through a separate Java class-loader namespace.
