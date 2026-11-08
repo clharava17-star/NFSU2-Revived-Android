@@ -90,7 +90,7 @@ final class ModMenuConfig {
         String data =
                 "# NFSU2 Revived Mod Menu configuration\n"
                 + "# This file is separate from Career Mode save data.\n"
-                + "version=2\n"
+                + "version=3\n"
                 + "master=" + onOff(settings.master) + "\n"
                 + "auto_perfect_shift=" + onOff(settings.autoPerfectShift) + "\n"
                 + "auto_shift_rpm=" + Math.max(MIN_SHIFT_RPM, Math.min(MAX_SHIFT_RPM, settings.autoShiftRpm)) + "\n"
