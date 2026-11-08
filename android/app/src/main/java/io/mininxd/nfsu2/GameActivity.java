@@ -814,7 +814,7 @@ public final class GameActivity extends NativeActivity {
             form.addView(readTelemetryButton);
 
             TextView calibrationText = new TextView(this);
-            calibrationText.setText("Shift calibration: start this before a Drag event, then shift manually. This only observes RPM and gear.");
+            calibrationText.setText("Calibration runs over the race screen. Gas and game controls must remain usable; accelerate and manually upshift several times, then tap Stop.");
             calibrationText.setTextSize(12);
             calibrationText.setPadding(0, dp(6), 0, dp(2));
             form.addView(calibrationText);
@@ -902,34 +902,43 @@ public final class GameActivity extends NativeActivity {
                     } else {
                         int gear = Math.round(sample[5]);
                         float currentRpm = sample[3];
+                        float currentThrottle = sample[4];
+                        boolean loadedThrottle = currentThrottle >= 0.25f && currentThrottle <= 1.5f;
                         if (previousGear[0] < 0) {
                             previousGear[0] = gear;
-                            peakRpm[0] = currentRpm;
+                            peakRpm[0] = loadedThrottle ? currentRpm : 0f;
                         } else if (gear <= 0) {
                             // Reverse/neutral is not a shift sample; start a fresh baseline.
                             previousGear[0] = gear;
-                            peakRpm[0] = currentRpm;
+                            peakRpm[0] = 0f;
                         } else if (gear > previousGear[0]) {
-                            if (previousGear[0] >= 1 && peakRpm[0] >= 500f) {
+                            // Only learn a pre-shift peak recorded while the driver was
+                            // actually applying throttle; idle/starting-grid changes do not count.
+                            if (previousGear[0] >= 1 && peakRpm[0] >= ModMenuConfig.MIN_SHIFT_RPM) {
                                 observedShiftPeaks.add(Math.round(peakRpm[0]));
                                 while (observedShiftPeaks.size() > 8) observedShiftPeaks.remove(0);
                             }
                             previousGear[0] = gear;
-                            peakRpm[0] = currentRpm;
+                            peakRpm[0] = loadedThrottle ? currentRpm : 0f;
                         } else if (gear != previousGear[0]) {
                             previousGear[0] = gear;
-                            peakRpm[0] = currentRpm;
-                        } else {
-                            // Keep the highest RPM observed while this gear is engaged.
+                            peakRpm[0] = loadedThrottle ? currentRpm : 0f;
+                        } else if (loadedThrottle) {
+                            // Keep the highest loaded RPM while this gear is engaged.
                             peakRpm[0] = Math.max(peakRpm[0], currentRpm);
                         }
-                        if (observedShiftPeaks.isEmpty()) {
-                            String capturing = String.format(java.util.Locale.US,
-                                    "Capturing | Gear %s | %.0f RPM | shift manually",
-                                    gear < 0 ? "R" : (gear == 0 ? "N" : String.valueOf(gear)), peakRpm[0]);
-                            calibrationText.setText(capturing);
-                            if (calibrationOverlayText[0] != null) calibrationOverlayText[0].setText(capturing);
-                        } else {
+                        int shownThrottle = currentThrottle < 0f ? -1 : Math.round(currentThrottle * 100f);
+                        String captureState = !loadedThrottle
+                                ? String.format(java.util.Locale.US,
+                                    "Waiting for throttle | Gear %d | %.0f RPM | Throttle %s | %d shifts",
+                                    gear, currentRpm, shownThrottle < 0 ? "n/a" : shownThrottle + "%",
+                                    observedShiftPeaks.size())
+                                : String.format(java.util.Locale.US,
+                                    "Capturing | Gear %d | %.0f RPM | Throttle %d%% | %d shifts",
+                                    gear, peakRpm[0], shownThrottle, observedShiftPeaks.size());
+                        calibrationText.setText(captureState);
+                        if (calibrationOverlayText[0] != null) calibrationOverlayText[0].setText(captureState);
+                        if (!observedShiftPeaks.isEmpty()) {
                             int min = Integer.MAX_VALUE, max = 0, total = 0;
                             for (int value : observedShiftPeaks) {
                                 min = Math.min(min, value);
@@ -1125,6 +1134,33 @@ public final class GameActivity extends NativeActivity {
                     Toast.makeText(this, reason, Toast.LENGTH_LONG).show();
                     return;
                 }
+                // Persist the visible Mod Menu switches before leaving the dialog.
+                // Previously, starting calibration without first pressing Save left the
+                // on-screen checked switches unsaved; stopping calibration then reloaded
+                // the old OFF config and Auto Shift appeared to disable itself.
+                settings.master = master.isChecked() || autoShift.isChecked();
+                settings.autoPerfectShift = autoShift.isChecked();
+                settings.autoShiftRpm = ModMenuConfig.MIN_SHIFT_RPM + rpm.getProgress();
+                settings.infiniteNos = infiniteNos.isChecked();
+                settings.raceAssist = raceAssist.isChecked();
+                settings.perfectDrift = perfectDrift.isChecked();
+                if (!settings.autoPerfectShift) {
+                    settings.autoShiftTrackId = -1;
+                    settings.autoShiftRaceType = -1;
+                } else if (initial[0] > 0.5f && Math.round(initial[1]) == 6
+                        && Math.round(initial[8]) == 4 && initial[12] > 0.5f) {
+                    settings.autoShiftTrackId = Math.round(initial[10]);
+                    settings.autoShiftRaceType = Math.round(initial[9]);
+                    activeEventAtOpen[0] = true;
+                    eventTrackAtOpen[0] = settings.autoShiftTrackId;
+                    eventTypeAtOpen[0] = settings.autoShiftRaceType;
+                }
+                if (!ModMenuConfig.save(this, settings)) {
+                    String reason = "Could not save Mod Menu settings. Calibration was not started; existing settings were left unchanged.";
+                    calibrationText.setText(reason);
+                    Toast.makeText(this, reason, Toast.LENGTH_LONG).show();
+                    return;
+                }
                 observedShiftPeaks.clear();
                 previousGear[0] = -1;
                 peakRpm[0] = 0f;
@@ -1143,16 +1179,20 @@ public final class GameActivity extends NativeActivity {
                 stopButton.setAllCaps(false);
                 stopButton.setMinWidth(dp(88));
                 stopButton.setMinHeight(dp(48));
-                stopButton.setFocusable(true);
-                stopButton.setFocusableInTouchMode(true);
+                stopButton.setFocusable(false);
+                stopButton.setFocusableInTouchMode(false);
                 stopButton.setClickable(true);
                 stopButton.setOnClickListener(stop -> stopCalibration.run());
 
                 LinearLayout overlay = new LinearLayout(this);
                 overlay.setOrientation(LinearLayout.HORIZONTAL);
                 overlay.setGravity(Gravity.CENTER_VERTICAL);
-                overlay.setFocusable(true);
-                overlay.setClickable(true);
+                // This HUD must be transparent to gameplay input outside the Stop button.
+                // A focusable PopupWindow steals window focus; GameActivity then dismisses
+                // its touch-control window in onWindowFocusChanged(false).
+                overlay.setFocusable(false);
+                overlay.setFocusableInTouchMode(false);
+                overlay.setClickable(false);
                 overlay.setPadding(dp(6), dp(4), dp(6), dp(4));
                 overlay.setBackgroundColor(0xE6222222);
                 overlay.addView(overlayText, new LinearLayout.LayoutParams(0,
@@ -1162,11 +1202,12 @@ public final class GameActivity extends NativeActivity {
 
                 int maxWidth = getResources().getDisplayMetrics().widthPixels - dp(24);
                 calibrationPopup[0] = new PopupWindow(overlay, Math.min(maxWidth, dp(560)),
-                        ViewGroup.LayoutParams.WRAP_CONTENT, true);
+                        ViewGroup.LayoutParams.WRAP_CONTENT, false);
                 calibrationPopup[0].setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(0xE6222222));
                 calibrationPopup[0].setOutsideTouchable(false);
-                calibrationPopup[0].setFocusable(true);
+                calibrationPopup[0].setFocusable(false);
                 calibrationPopup[0].setTouchable(true);
+                calibrationPopup[0].setInputMethodMode(PopupWindow.INPUT_METHOD_NOT_NEEDED);
                 calibrationPopup[0].setElevation(dp(8));
                 if (Build.VERSION.SDK_INT >= 29) calibrationPopup[0].setTouchModal(false);
                 modCalibrationWindow = calibrationPopup[0];
