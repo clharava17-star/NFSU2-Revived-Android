@@ -55,7 +55,8 @@ public final class RoamNativeBridge {
      *  forwardGearCount, driveTrainGear, lastShiftBonus, lastShiftRpm].
      * gameGearEnum: 0 reverse, 1 neutral, 2 first gear, etc.
      * The last ten values use the current upgraded RidePhysicsInfo and
-     * DriveTrain, including the game's per-gear Perfect Shift range.
+     * DriveTrain, including the exact per-gear upper match interval from
+     * ShiftMatch: shiftUp + (1 - gearboxMatchWindow) * gearboxShiftWeights * coefficientE4.
      */
 
     public static native float[] nativeGetGameTelemetry();
