@@ -39,8 +39,10 @@
 #ifdef __ANDROID__
 #include <aaudio/AAudio.h>
 #endif
+#ifdef __ANDROID__
 extern "C" void nfs_roam_bind_guest_memory(ptrdiff_t* mem_base, uint32_t* esp);
 extern "C" void nfs_roam_frame_tick(void);
+#endif
 extern "C" {
 #include "recomp_types.h"
 #include "pe_format.h"
@@ -362,8 +364,10 @@ void d3dDispatch(){
         // libnfsu2_roam is a direct DT_NEEDED dependency of this library.
         // Call the companion from the same linker namespace; do not rely on
         // class-loader dlopen visibility from NativeActivity.
+#ifdef __ANDROID__
         nfs_roam_bind_guest_memory(&g_mem_base, &g_esp);
         nfs_roam_frame_tick();
+#endif
         serviceGuestSound();
         lastPresentMs=steadyMs();
         startStallWatch();
