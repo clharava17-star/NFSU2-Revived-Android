@@ -584,25 +584,34 @@ public final class GameActivity extends NativeActivity {
                         return;
                     }
                     float[] t = io.mininxd.nfsu2.net.RoamNativeBridge.nativeGetGameTelemetry();
-                    if (t == null || t.length < 6) {
-                        telemetryText.setText("Telemetry snapshot unavailable.");
+                    if (t == null || t.length < 13) {
+                        telemetryText.setText("Telemetry snapshot unavailable or bridge is outdated. Reinstall the latest Mod Edition build.");
                         return;
                     }
+                    int flow = Math.round(t[1]);
+                    int raceState = Math.round(t[8]);
+                    int raceType = Math.round(t[9]);
+                    int track = Math.round(t[10]);
+                    String playerPointer = t[6] > 0.5f ? "OK" : "missing";
+                    String carPointer = t[7] > 0.5f ? "OK" : "missing";
                     if (t[0] < 0.5f) {
-                        int gameState = Math.round(t[1]);
-                        if (gameState != 6) {
-                            telemetryText.setText("Game state " + gameState
-                                    + " — enter an active Drag event, start driving, then read again.");
-                        } else {
-                            telemetryText.setText("Game state is active, but the player-car or gearbox pointer is not ready. Drive for a moment and read again.");
-                        }
+                        telemetryText.setText(String.format(java.util.Locale.US,
+                                "No valid car snapshot | Flow %d | Player* %s | Car* %s | Race state %s | Type %d | Track %d",
+                                flow, playerPointer, carPointer,
+                                raceState < 0 ? "n/a" : String.valueOf(raceState), raceType, track));
                         return;
                     }
                     int rawGear = Math.round(t[5]);
-                    String gearLabel = rawGear == 0 ? "R" : (rawGear == 1 ? "N" : String.valueOf(rawGear - 1));
+                    String gearLabel = rawGear < 0 ? "R" : (rawGear == 0 ? "N" : String.valueOf(rawGear));
+                    String throttle = t[4] < 0.0f
+                            ? "n/a"
+                            : String.format(java.util.Locale.US, "%.0f%%", t[4] * 100.0f);
+                    String raceLabel = t[12] > 0.5f ? "RACE ACTIVE" : "not in active race";
                     telemetryText.setText(String.format(java.util.Locale.US,
-                            "Live: %.0f RPM  |  Gear %s  |  %.0f km/h  |  Throttle %.0f%%",
-                            t[3], gearLabel, t[2] * 3.6f, t[4] * 100.0f));
+                            "Live: %.0f RPM | Gear %s | %.0f km/h | Throttle %s\nFlow %d | Race state %s | Type %d | Track %d | %s",
+                            t[3], gearLabel, t[2] * 3.6f, throttle,
+                            flow, raceState < 0 ? "n/a" : String.valueOf(raceState),
+                            raceType, track, raceLabel));
                 } catch (Throwable error) {
                     telemetryText.setText("Telemetry read failed: " + error.getClass().getSimpleName());
                 }
@@ -665,18 +674,30 @@ public final class GameActivity extends NativeActivity {
                         return;
                     }
                     float[] sample = io.mininxd.nfsu2.net.RoamNativeBridge.nativeGetGameTelemetry();
-                    if (sample == null || sample.length < 6 || sample[0] < 0.5f) {
+                    if (sample == null || sample.length < 13) {
                         previousGear[0] = -1;
                         peakRpm[0] = 0f;
-                        String waiting = "Waiting for valid driving telemetry..."
-                                + (sample != null && sample.length >= 2
-                                ? " Game state " + Math.round(sample[1]) : "");
+                        String waiting = "Telemetry bridge is outdated. Reinstall the latest build.";
+                        calibrationText.setText(waiting);
+                        if (calibrationOverlayText[0] != null) calibrationOverlayText[0].setText(waiting);
+                    } else if (sample[0] < 0.5f || sample[12] < 0.5f) {
+                        previousGear[0] = -1;
+                        peakRpm[0] = 0f;
+                        String waiting = sample[0] < 0.5f
+                                ? String.format(java.util.Locale.US,
+                                    "No car snapshot | Flow %d | Player* %s | Car* %s",
+                                    Math.round(sample[1]), sample[6] > 0.5f ? "OK" : "missing",
+                                    sample[7] > 0.5f ? "OK" : "missing")
+                                : String.format(java.util.Locale.US,
+                                    "Car found, waiting for active race | Flow %d | Race state %d | Type %d | Track %d",
+                                    Math.round(sample[1]), Math.round(sample[8]),
+                                    Math.round(sample[9]), Math.round(sample[10]));
                         calibrationText.setText(waiting);
                         if (calibrationOverlayText[0] != null) calibrationOverlayText[0].setText(waiting);
                     } else {
                         int gear = Math.round(sample[5]);
                         float currentRpm = sample[3];
-                        if (previousGear[0] < 0 || gear < 2) {
+                        if (previousGear[0] < 0 || gear <= 1) {
                             previousGear[0] = gear;
                             peakRpm[0] = currentRpm;
                         } else if (gear > previousGear[0]) {
@@ -694,8 +715,8 @@ public final class GameActivity extends NativeActivity {
                         }
                         if (observedShiftPeaks.isEmpty()) {
                             String capturing = String.format(java.util.Locale.US,
-                                    "Capturing | Gear %d | %.0f RPM | shift manually",
-                                    Math.max(0, gear - 1), peakRpm[0]);
+                                    "Capturing | Gear %s | %.0f RPM | shift manually",
+                                    gear < 0 ? "R" : (gear == 0 ? "N" : String.valueOf(gear)), peakRpm[0]);
                             calibrationText.setText(capturing);
                             if (calibrationOverlayText[0] != null) calibrationOverlayText[0].setText(capturing);
                         } else {
@@ -844,11 +865,26 @@ public final class GameActivity extends NativeActivity {
                         return;
                     }
                     float[] initial = io.mininxd.nfsu2.net.RoamNativeBridge.nativeGetGameTelemetry();
-                    if (initial == null || initial.length < 6 || initial[0] < 0.5f) {
-                        int state = initial != null && initial.length > 1 ? Math.round(initial[1]) : -1;
-                        String reason = state == 0
-                                ? "Game state 0: you are on a menu/results screen. Continue, start the Drag race, and drive before calibration."
-                                : "No valid driving telemetry (game state " + state + "). Start the actual race and drive first.";
+                    if (initial == null || initial.length < 13) {
+                        String reason = "Telemetry bridge is outdated. Reinstall the latest Mod Edition build.";
+                        calibrationText.setText(reason);
+                        Toast.makeText(this, reason, Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    if (initial[0] < 0.5f) {
+                        String reason = String.format(java.util.Locale.US,
+                                "No car snapshot | Flow %d | Player* %s | Car* %s",
+                                Math.round(initial[1]), initial[6] > 0.5f ? "OK" : "missing",
+                                initial[7] > 0.5f ? "OK" : "missing");
+                        calibrationText.setText(reason);
+                        Toast.makeText(this, reason, Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    if (initial[12] < 0.5f) {
+                        String reason = String.format(java.util.Locale.US,
+                                "Car found, but race is not active | Flow %d | Race state %d | Type %d | Track %d. Start the Drag event and wait until driving begins.",
+                                Math.round(initial[1]), Math.round(initial[8]),
+                                Math.round(initial[9]), Math.round(initial[10]));
                         calibrationText.setText(reason);
                         Toast.makeText(this, reason, Toast.LENGTH_LONG).show();
                         return;
