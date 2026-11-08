@@ -553,10 +553,8 @@ public final class GameActivity extends NativeActivity {
     /** Opens the in-game Mod Menu status panel. Runtime cheats remain unavailable until verified hooks are implemented. */
     private void showModMenu() {
         if (isFinishing() || isDestroyed()) return;
-        if (modCalibrationRunning) {
-            stopModCalibration();
-            return;
-        }
+        // If sampling is active, stop it first, then continue opening the paused Mod Menu.
+        if (modCalibrationRunning) stopModCalibration();
         runOnUiThread(() -> {
             // Use the existing HUD Pause/Escape input so the built-in game state handles pause.
             pulseGamePauseKey();
