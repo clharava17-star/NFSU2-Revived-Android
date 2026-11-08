@@ -43,10 +43,12 @@ public final class RoamNativeBridge {
     public static native void nativeSetFrameLimit(int fps);
     public static native int[] nativeGetActionKeys();
     /**
-     * Read-only 17-field snapshot:
+     * Read-only 20-field snapshot:
      * [valid, gameFlow, speedMps, rpm, throttle, signedGear,
      *  playerPointerValid, carPointerValid, raceState, raceType,
-     *  trackId, careerRaceActive, activeWorldRace].
+     *  trackId, careerRaceActive, activeWorldRace, frameHookCount,
+     *  telemetryUpdateCount, guestMemoryReady, guestEspReady,
+     *  flowAddressReadable, playerSlotAddressReadable, raceAddressReadable].
      * signedGear: -1 reverse, 0 neutral, 1 first gear, etc.
      */
 
