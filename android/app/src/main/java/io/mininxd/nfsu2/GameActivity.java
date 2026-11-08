@@ -248,7 +248,7 @@ public final class GameActivity extends NativeActivity {
                         && perfectRangeRpm > 0.0f && perfectRangeRpm <= 5000.0f
                         && forwardGears >= 1 && forwardGears <= 6
                         && driveTrainGear >= 2 && driveTrainGear <= forwardGears
-                        && gear == driveTrainGear - 1;
+                        && gear == driveTrainGear;
 
                 if (!matchingEvent || !validVehicle || !validPerfectWindow) {
                     pendingGear[0] = -1;
@@ -309,7 +309,7 @@ public final class GameActivity extends NativeActivity {
                     }
 
                     boolean accelerating = throttle >= 0.25f && throttle <= 1.5f
-                            && rpm > 0.0f && gear >= 1 && gear < forwardGears;
+                            && rpm > 0.0f && gear >= 2 && gear <= forwardGears;
                     float windowStart = shiftUpRpm;
                     float windowEnd = shiftUpRpm + 0.05f * perfectRangeRpm;
                     float targetCenter = shiftUpRpm + 0.025f * perfectRangeRpm;
@@ -814,7 +814,7 @@ public final class GameActivity extends NativeActivity {
                         return;
                     }
                     int rawGear = Math.round(t[5]);
-                    String gearLabel = rawGear < 0 ? "R" : (rawGear == 0 ? "N" : String.valueOf(rawGear));
+                    String gearLabel = rawGear <= 0 ? "R" : (rawGear == 1 ? "N" : String.valueOf(rawGear - 1));
                     String throttle = t[4] < 0.0f
                             ? "n/a"
                             : String.format(java.util.Locale.US, "%.0f%%", t[4] * 100.0f);
