@@ -111,42 +111,31 @@ static inline void roam_android_patch_carpool(void) {
 }
 
 /*
- * Resolve against the already-loaded game runtime only.
- *
- * Never fall back to RTLD_LAZY here: in some Android linker namespaces that
- * can load a second copy of libnfsu2_android.so. Its g_mem_base is unrelated
- * to the running game and remains zero forever.
+ * These symbols are exported by the prebuilt game runtime. The CI workflow
+ * links libnfsu2_roam.so against that exact shared object, so these references
+ * are resolved by ELF at load time and cannot bind to a second runtime copy.
  */
-static void *g_game_runtime_handle = NULL;
-
-static void *roam_android_game_symbol(const char *name) {
-    void *symbol = dlsym(RTLD_DEFAULT, name);
-    if (symbol) return symbol;
-
-    if (!g_game_runtime_handle) {
-        g_game_runtime_handle = dlopen("libnfsu2_android.so", RTLD_NOW | RTLD_NOLOAD);
-    }
-    if (g_game_runtime_handle) return dlsym(g_game_runtime_handle, name);
-    return NULL;
-}
+extern ptrdiff_t g_mem_base;
+extern uint32_t g_esp;
+extern uint32_t g_eax;
+extern uint32_t g_ecx;
+extern uint32_t g_edx;
+extern recomp_func_t recomp_lookup(uint32_t va);
 
 static int roam_android_resolve_symbols(void) {
-    if (!g_p_mem_base) {
-        g_p_mem_base = (ptrdiff_t *)roam_android_game_symbol("g_mem_base");
-    }
-    if (!g_p_esp) {
-        g_p_esp = (uint32_t *)roam_android_game_symbol("g_esp");
-    }
-    if (!g_p_recomp_lookup) {
-        g_p_recomp_lookup = (recomp_func_t (*)(uint32_t))roam_android_game_symbol("recomp_lookup");
-    }
-    if (!g_p_eax) g_p_eax = (uint32_t *)roam_android_game_symbol("g_eax");
-    if (!g_p_ecx) g_p_ecx = (uint32_t *)roam_android_game_symbol("g_ecx");
-    if (!g_p_edx) g_p_edx = (uint32_t *)roam_android_game_symbol("g_edx");
+    g_p_mem_base = &g_mem_base;
+    g_p_esp = &g_esp;
+    g_p_eax = &g_eax;
+    g_p_ecx = &g_ecx;
+    g_p_edx = &g_edx;
+    g_p_recomp_lookup = &recomp_lookup;
+
+    /* Optional guard exported only by some runtime variants. */
     if (!g_p_guest_is_readable) {
-        g_p_guest_is_readable = (int (*)(uint32_t, uint32_t))roam_android_game_symbol("guest_is_readable");
+        g_p_guest_is_readable = (int (*)(uint32_t, uint32_t))
+                dlsym(RTLD_DEFAULT, "guest_is_readable");
     }
-    return g_p_mem_base != NULL && *g_p_mem_base != 0;
+    return *g_p_mem_base != 0;
 }
 
 /* Guest memory can be sampled at Present even when no guest function is on-stack.
