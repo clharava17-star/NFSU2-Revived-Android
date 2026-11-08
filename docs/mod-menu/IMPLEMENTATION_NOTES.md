@@ -3,11 +3,11 @@
 Target base: current `main` branch (v0.15.17 at the time of audit).
 Working branch: `feature/mod-menu-v0.2`.
 
-## Auto Shift — native runtime symbol resolution
+## Auto Shift — native runtime binding
 
-The earlier resolver attempted `dlopen("libnfsu2_android.so", RTLD_LAZY)` if `RTLD_NOLOAD` failed. On Android this can open a second runtime instance in another linker namespace; that instance has its own uninitialized `g_mem_base`, so Auto Shift telemetry remains unavailable even while the game is running.
+Static inspection of the APK confirmed the game runtime exports `g_mem_base`, `g_esp`, `g_eax`, `g_ecx`, `g_edx`, and `recomp_lookup`, while the companion library previously had no ELF `DT_NEEDED` dependency on `libnfsu2_android.so`. Depending on Android linker namespace rules, `dlsym(RTLD_DEFAULT)` / `RTLD_NOLOAD` can fail to find symbols loaded through a separate Java class-loader namespace.
 
-The Auto Shift telemetry resolver now checks `dlsym(RTLD_DEFAULT, ...)` first and then uses `RTLD_NOW | RTLD_NOLOAD` only. It never loads a second copy of the game runtime. The 23-value snapshot distinguishes whether the `g_mem_base` symbol was found from whether its game-memory image is mapped, and whether the guest ESP symbol exists. The JNI read counter increments on every telemetry request, even when memory is not yet mapped.
+The companion now declares the exported game symbols directly and the CI link step adds `-L.../jniLibs/arm64-v8a -Wl,--no-as-needed -lnfsu2_android -Wl,--as-needed -Wl,-z,defs`. This creates a load-time ELF dependency on the exact packaged game runtime. The loader must resolve these references against that runtime before the companion can load; `g_mem_base` and `g_esp` therefore cannot silently point at a second copy. `guest_is_readable` remains optional and is resolved dynamically if present. The 23-value snapshot still distinguishes the memory symbol from the mapped image and reports each JNI refresh request.
 
 This change only fixes the read-only telemetry access path. Auto Shift still sends no shift input until it sees a valid car snapshot and the intended active Drag event. The gear-up input uses the existing game action scan code; the RPM threshold remains experimental and is not claimed to reproduce the game's green Perfect Shift judgement.
 
