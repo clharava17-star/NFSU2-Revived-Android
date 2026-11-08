@@ -833,6 +833,10 @@ public final class GameActivity extends NativeActivity {
             final Runnable[] calibrationPoll = new Runnable[1];
             final PopupWindow[] calibrationPopup = {null};
             final TextView[] calibrationOverlayText = {null};
+            // The stop action is created before the RPM controls. Keep references so a
+            // completed calibration can update the still-open dialog's slider and label.
+            final TextView[] rpmLabelRef = {null};
+            final android.widget.SeekBar[] rpmSeekBarRef = {null};
             final Runnable stopCalibration = () -> {
                 calibrationRunning[0] = false;
                 modCalibrationRunning = false;
@@ -861,6 +865,17 @@ public final class GameActivity extends NativeActivity {
                     ModMenuConfig.Settings learned = ModMenuConfig.load(this);
                     learned.autoShiftRpm = learnedRpm;
                     boolean saved = ModMenuConfig.save(this, learned);
+                    if (saved) {
+                        // Keep the in-memory Settings instance in sync too: pressing
+                        // Save settings after calibration must not overwrite the learned RPM.
+                        settings.autoShiftRpm = learnedRpm;
+                        if (rpmSeekBarRef[0] != null) {
+                            rpmSeekBarRef[0].setProgress(learnedRpm - ModMenuConfig.MIN_SHIFT_RPM);
+                        }
+                        if (rpmLabelRef[0] != null) {
+                            rpmLabelRef[0].setText("Auto Shift target: " + learnedRpm + " RPM");
+                        }
+                    }
                     String message = String.format(java.util.Locale.US,
                             saved
                                     ? "Calibration saved: %d manual shifts | observed %d–%d RPM | Auto Shift target %d RPM"
@@ -989,11 +1004,13 @@ public final class GameActivity extends NativeActivity {
             form.addView(autoShiftScope);
 
             TextView rpmLabel = new TextView(this);
+            rpmLabelRef[0] = rpmLabel;
             rpmLabel.setText("Auto Shift target: " + settings.autoShiftRpm + " RPM");
             rpmLabel.setPadding(0, dp(4), 0, 0);
             form.addView(rpmLabel);
 
             android.widget.SeekBar rpm = new android.widget.SeekBar(this);
+            rpmSeekBarRef[0] = rpm;
             rpm.setMax(ModMenuConfig.MAX_SHIFT_RPM - ModMenuConfig.MIN_SHIFT_RPM);
             rpm.setProgress(settings.autoShiftRpm - ModMenuConfig.MIN_SHIFT_RPM);
             rpm.setEnabled(settings.autoPerfectShift);
