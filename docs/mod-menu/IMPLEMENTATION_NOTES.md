@@ -3,6 +3,20 @@
 Target base: current `main` branch (v0.15.17 at the time of audit).
 Working branch: `feature/mod-menu-v0.2`.
 
+## Root-cause repair for empty Drag telemetry
+
+The user confirmed the car is physically at the Drag start/finish line while the Mod Menu still reported `Flow 0 | Player* missing | Car* missing | Type -1 | Track -1`. The previous telemetry path incorrectly required a non-zero guest ESP before even reading committed guest memory. The companion's Direct3D Present hook can be called at a point where the guest stack is idle, even though its memory image is already mapped. This short-circuited the update and left the static initial snapshot visible.
+
+The fix separates:
+- **Guest memory readiness**: mapped `g_mem_base`; sufficient for guarded, read-only address reads.
+- **Guest stack readiness**: non-zero `g_esp`; still required before any companion operation that invokes lifted game functions.
+
+The frame hook now increments diagnostic counters, publishes telemetry whenever guest memory is mapped, and returns before free-roam guest-function calls if the ESP is not live. The 20-value snapshot includes frame-hook count, telemetry-update count, memory/ESP readiness, and committed-address checks for the flow, player slot, and race globals. These diagnostics are displayed in the Mod Menu so the next run can distinguish a missing Present hook from an unmapped/incorrect game-data address. The C read paths remain guarded by the guest committed-memory check.
+
+Auto Shift Save no longer discards the user's ON preference merely because event telemetry was unavailable when the menu was opened. It persists ON with a clear **not armed yet** message, while the controller remains fail-closed until a valid event track/type has actually been identified. It does not send shift inputs without those event identifiers.
+
+No APK should be distributed based solely on a successful build; the new diagnostics must be read on-device first. Do not describe the prototype as Perfect Shift until the actual green shift judgement is mapped and verified.
+
 ## Verified integration points
 
 - `android/app/src/main/java/io/mininxd/nfsu2/GameActivity.java`: game activity owns the touch-controls overlay and forwards scan-code input to the native game.
