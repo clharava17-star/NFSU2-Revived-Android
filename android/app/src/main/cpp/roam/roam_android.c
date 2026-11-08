@@ -183,7 +183,7 @@ static _Atomic int g_mod_stack_ready = 0;
  * then inline CPI at RPI+0x30. The active DriveTrain is Car+0x34 (PhysicsMover),
  * then PhysicsMover+0x4C. It provides shiftUp[9] at +0x84, last shift result at +0x68,
  * rpmAtShift at +0x6C, perfectRangeMul at +0xE4, and perfType at +0xF0.
- * PerfectShiftMaxRPMDiff is the game's 3x9 table at guest VA 0x007FBF60.
+ * PerfectShiftMaxRPMDiff is the game's 4x9 table at guest VA 0x007FBF60.
  * ShiftMatch (original 0x594F20) computes R = table[perfType*9+gear] * perfectRangeMul.
  * It returns maximum match (1.0) only for RPM strictly above shiftUp[gear] and
  * below shiftUp[gear] + (1.0 - gearboxMatchWindow) * R. The returned field [28]
@@ -322,15 +322,15 @@ static void mod_telemetry_update(void) {
                 const int perf_type = (int32_t)MR32(drive_train + 0xF0u);
                 const int forward_gears = active_cpi && rh_mem_committed(active_cpi + 0x1C8u, 4)
                         ? (int32_t)MR32(active_cpi + 0x1C8u) : 0;
-                const int max_diff_index = (perf_type >= 0 && perf_type <= 2 && drive_gear >= 0 && drive_gear <= 8)
+                const int max_diff_index = (perf_type >= 0 && perf_type <= 3 && drive_gear >= 0 && drive_gear <= 8)
                         ? perf_type * 9 + drive_gear : -1;
                 if (drive_gear >= 2 && drive_gear <= 7
                         && drive_gear <= forward_gears
                         && forward_gears <= 6
-                        && perf_type >= 0 && perf_type <= 2
+                        && perf_type >= 0 && perf_type <= 3
                         && isfinite(shift_up) && shift_up >= 1000.0f && shift_up <= 20000.0f
                         && isfinite(perfect_range_mul) && perfect_range_mul > 0.0f && perfect_range_mul <= 5.0f
-                        && max_diff_index >= 0 && max_diff_index < 27
+                        && max_diff_index >= 0 && max_diff_index < 36
                         && rh_mem_committed(0x007FBF60u + 4u * (uint32_t)max_diff_index, 4)) {
                     const float max_rpm_diff = MRF32(0x007FBF60u + 4u * (uint32_t)max_diff_index);
                     const float gearbox_match_window = rh_mem_committed(0x007FBF5Cu, 4)
