@@ -76,6 +76,10 @@ The user's screenshot while the game displayed **Event Results** showed game-flo
 
 The user also reported that the calibration overlay's Stop button did not respond. The PopupWindow was originally created non-focusable. The updated implementation creates a touchable/focusable popup, gives Stop a minimum 88dp × 48dp hit target, and offers a second stop route: tapping the HUD **MOD** button while calibration is running calls the activity-owned stop routine. The Stop routine removes the polling callback and dismisses the popup.
 
+## Pause while Mod Menu is open
+
+The MOD HUD action now pauses the guest simulation through the existing `setGuestPaused(bool)` scheduler API. A JNI bridge `GameActivity.nativeSetModMenuPaused(boolean)` sets an activity-owned atomic flag, and the native host loop reapplies it rather than unconditionally resuming the guest every render cycle. This keeps the game simulation and looping audio suspended while the panel is open. The dialog dismiss listener resumes the guest for Close, Save settings, All OFF, Back, or when shift calibration is started. OS lifecycle pause/resume handling remains separate; the Mod Menu flag does not override an Android background pause.
+
 ## Current status — v0.2 prototype
 
 Implemented on `feature/mod-menu-v0.2`:
@@ -85,6 +89,7 @@ Implemented on `feature/mod-menu-v0.2`:
 - Settings are stored separately at `<gameRoot>/mods/NFSU2_ModMenu/modmenu.ini`.
 - All options default OFF. Saving uses a temporary file and a backup/rollback path to avoid deleting a prior configuration on a failed write.
 - The MOD HUD control remains available when the touch-control layout is hidden.
+- Pressing MOD pauses the guest game simulation while the Mod Menu dialog is open; dismissing the dialog resumes gameplay.
 - `Yogie Clharava` appears only in the Mod Menu bottom action bar, centered in the gap after `All OFF` and before `Close` / `Save settings`. No watermark is drawn on the normal gameplay HUD.
 
 Implemented as read-only diagnostic groundwork:
