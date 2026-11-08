@@ -721,12 +721,16 @@ public final class GameActivity extends NativeActivity {
                     String playerPointer = t[6] > 0.5f ? "OK" : "missing";
                     String carPointer = t[7] > 0.5f ? "OK" : "missing";
                     if (t[0] < 0.5f) {
-                        String diagnostics = t.length >= 17
+                        String diagnostics = t.length >= 20
                                 ? String.format(java.util.Locale.US,
-                                        "\nFrame hooks %d | snapshots %d | memory %s | guest ESP %s",
+                                        "\nHooks %d | samples %d | memory %s | ESP %s"
+                                                + "\nFlow addr %s | Player slot %s | Race addr %s",
                                         Math.round(t[13]), Math.round(t[14]),
                                         t[15] > 0.5f ? "ready" : "missing",
-                                        t[16] > 0.5f ? "ready" : "idle")
+                                        t[16] > 0.5f ? "ready" : "idle",
+                                        t[17] > 0.5f ? "readable" : "unmapped",
+                                        t[18] > 0.5f ? "readable" : "unmapped",
+                                        t[19] > 0.5f ? "readable" : "unmapped")
                                 : "\nNative diagnostics unavailable.";
                         telemetryText.setText(String.format(java.util.Locale.US,
                                 "No valid car snapshot | Flow %d | Player* %s | Car* %s | Race state %s | Type %d | Track %d%s",
@@ -741,12 +745,16 @@ public final class GameActivity extends NativeActivity {
                             ? "n/a"
                             : String.format(java.util.Locale.US, "%.0f%%", t[4] * 100.0f);
                     String raceLabel = t[12] > 0.5f ? "RACE ACTIVE" : "not in active race";
-                    String diagnostics = t.length >= 17
+                    String diagnostics = t.length >= 20
                             ? String.format(java.util.Locale.US,
-                                    "\nFrame hooks %d | snapshots %d | memory %s | guest ESP %s",
+                                    "\nHooks %d | samples %d | memory %s | ESP %s"
+                                            + "\nFlow addr %s | Player slot %s | Race addr %s",
                                     Math.round(t[13]), Math.round(t[14]),
                                     t[15] > 0.5f ? "ready" : "missing",
-                                    t[16] > 0.5f ? "ready" : "idle")
+                                    t[16] > 0.5f ? "ready" : "idle",
+                                    t[17] > 0.5f ? "readable" : "unmapped",
+                                    t[18] > 0.5f ? "readable" : "unmapped",
+                                    t[19] > 0.5f ? "readable" : "unmapped")
                             : "";
                     telemetryText.setText(String.format(java.util.Locale.US,
                             "Live: %.0f RPM | Gear %s | %.0f km/h | Throttle %s\nFlow %d | Race state %s | Type %d | Track %d | %s%s",
