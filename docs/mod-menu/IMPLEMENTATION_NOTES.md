@@ -3,6 +3,14 @@
 Target base: current `main` branch (v0.15.17 at the time of audit).
 Working branch: `feature/mod-menu-v0.2`.
 
+## Auto Shift — native runtime symbol resolution
+
+The earlier resolver attempted `dlopen("libnfsu2_android.so", RTLD_LAZY)` if `RTLD_NOLOAD` failed. On Android this can open a second runtime instance in another linker namespace; that instance has its own uninitialized `g_mem_base`, so Auto Shift telemetry remains unavailable even while the game is running.
+
+The Auto Shift telemetry resolver now checks `dlsym(RTLD_DEFAULT, ...)` first and then uses `RTLD_NOW | RTLD_NOLOAD` only. It never loads a second copy of the game runtime. The 23-value snapshot distinguishes whether the `g_mem_base` symbol was found from whether its game-memory image is mapped, and whether the guest ESP symbol exists. The JNI read counter increments on every telemetry request, even when memory is not yet mapped.
+
+This change only fixes the read-only telemetry access path. Auto Shift still sends no shift input until it sees a valid car snapshot and the intended active Drag event. The gear-up input uses the existing game action scan code; the RPM threshold remains experimental and is not claimed to reproduce the game's green Perfect Shift judgement.
+
 ## Root-cause repair for empty Drag telemetry
 ### APK inspection: why the previous diagnostic still showed zero
 
