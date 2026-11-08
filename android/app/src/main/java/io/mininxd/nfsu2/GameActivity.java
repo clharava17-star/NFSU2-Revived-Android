@@ -40,6 +40,9 @@ public final class GameActivity extends NativeActivity {
     private PopupWindow statusWindow;
     private PopupWindow controlsWindow;
     private PopupWindow modCalibrationWindow;
+    private boolean modCalibrationRunning;
+    private Handler modCalibrationHandler;
+    private Runnable modCalibrationPoll;
     private DiagnosticOverlay diagnosticOverlay;
     private RacingControlsView touchControls;
     private boolean statusHidden;
@@ -256,6 +259,20 @@ public final class GameActivity extends NativeActivity {
      * Android 11+ grants all-files access per package. Mod Edition has its own application ID,
      * so permission granted to the original NFSU2 app does not automatically carry over.
      */
+    private void stopModCalibration() {
+        modCalibrationRunning = false;
+        if (modCalibrationHandler != null && modCalibrationPoll != null) {
+            modCalibrationHandler.removeCallbacks(modCalibrationPoll);
+        }
+        if (modCalibrationWindow != null && modCalibrationWindow.isShowing()) {
+            modCalibrationWindow.dismiss();
+        }
+        modCalibrationWindow = null;
+        modCalibrationHandler = null;
+        modCalibrationPoll = null;
+        Toast.makeText(this, "Shift calibration stopped.", Toast.LENGTH_SHORT).show();
+    }
+
     private boolean hasModMenuStorageAccess() {
         if (Build.VERSION.SDK_INT >= 30) return Environment.isExternalStorageManager();
         return checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE)
@@ -531,6 +548,10 @@ public final class GameActivity extends NativeActivity {
     /** Opens the in-game Mod Menu status panel. Runtime cheats remain unavailable until verified hooks are implemented. */
     private void showModMenu() {
         if (isFinishing() || isDestroyed()) return;
+        if (modCalibrationRunning) {
+            stopModCalibration();
+            return;
+        }
         runOnUiThread(() -> {
             ModMenuConfig.Settings settings = ModMenuConfig.load(this);
             LinearLayout form = new LinearLayout(this);
@@ -595,6 +616,7 @@ public final class GameActivity extends NativeActivity {
             form.addView(calibrationButton);
 
             final android.os.Handler calibrationHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+            modCalibrationHandler = calibrationHandler;
             final boolean[] calibrationRunning = {false};
             final int[] previousGear = {-1};
             final float[] peakRpm = {0f};
@@ -604,14 +626,18 @@ public final class GameActivity extends NativeActivity {
             final TextView[] calibrationOverlayText = {null};
             final Runnable stopCalibration = () -> {
                 calibrationRunning[0] = false;
+                modCalibrationRunning = false;
                 calibrationHandler.removeCallbacks(calibrationPoll[0]);
                 if (calibrationPopup[0] != null && calibrationPopup[0].isShowing()) {
                     calibrationPopup[0].dismiss();
                 }
                 calibrationPopup[0] = null;
+                modCalibrationWindow = null;
+                modCalibrationHandler = null;
+                modCalibrationPoll = null;
                 calibrationOverlayText[0] = null;
                 if (observedShiftPeaks.isEmpty()) {
-                    Toast.makeText(this, "No upshift samples captured. Try again during a Drag event.", Toast.LENGTH_LONG).show();
+                    Toast.makeText(this, "No upshift samples captured. Calibration stopped.", Toast.LENGTH_LONG).show();
                 } else {
                     int min = Integer.MAX_VALUE, max = 0, total = 0;
                     for (int value : observedShiftPeaks) {
@@ -686,6 +712,7 @@ public final class GameActivity extends NativeActivity {
                 }
                 if (calibrationRunning[0]) calibrationHandler.postDelayed(calibrationPoll[0], 50);
             };
+            modCalibrationPoll = calibrationPoll[0];
 
             CheckBox master = new CheckBox(this);
             master.setText("Master Cheat — enable saved mod options");
@@ -805,11 +832,34 @@ public final class GameActivity extends NativeActivity {
                     stopCalibration.run();
                     return;
                 }
+                try {
+                    if (!io.mininxd.nfsu2.net.RoamNativeBridge.isLoaded()) {
+                        calibrationText.setText("Telemetry bridge unavailable. Calibration was not started.");
+                        Toast.makeText(this, "Telemetry bridge unavailable.", Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    float[] initial = io.mininxd.nfsu2.net.RoamNativeBridge.nativeGetGameTelemetry();
+                    if (initial == null || initial.length < 6 || initial[0] < 0.5f) {
+                        int state = initial != null && initial.length > 1 ? Math.round(initial[1]) : -1;
+                        String reason = state == 0
+                                ? "Game state 0: you are on a menu/results screen. Continue, start the Drag race, and drive before calibration."
+                                : "No valid driving telemetry (game state " + state + "). Start the actual race and drive first.";
+                        calibrationText.setText(reason);
+                        Toast.makeText(this, reason, Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                } catch (Throwable error) {
+                    String reason = "Could not read telemetry: " + error.getClass().getSimpleName();
+                    calibrationText.setText(reason);
+                    Toast.makeText(this, reason, Toast.LENGTH_LONG).show();
+                    return;
+                }
                 observedShiftPeaks.clear();
                 previousGear[0] = -1;
                 peakRpm[0] = 0f;
                 calibrationRunning[0] = true;
-                calibrationText.setText("Waiting for valid driving telemetry...");
+                modCalibrationRunning = true;
+                calibrationText.setText("Shift calibration running. Stop here or tap MOD to stop.");
                 TextView overlayText = new TextView(this);
                 overlayText.setText("Starting shift calibration...");
                 overlayText.setTextColor(Color.WHITE);
@@ -820,12 +870,18 @@ public final class GameActivity extends NativeActivity {
                 android.widget.Button stopButton = new android.widget.Button(this);
                 stopButton.setText("Stop");
                 stopButton.setAllCaps(false);
-                stopButton.setMinWidth(0);
+                stopButton.setMinWidth(dp(88));
+                stopButton.setMinHeight(dp(48));
+                stopButton.setFocusable(true);
+                stopButton.setFocusableInTouchMode(true);
+                stopButton.setClickable(true);
                 stopButton.setOnClickListener(stop -> stopCalibration.run());
 
                 LinearLayout overlay = new LinearLayout(this);
                 overlay.setOrientation(LinearLayout.HORIZONTAL);
                 overlay.setGravity(Gravity.CENTER_VERTICAL);
+                overlay.setFocusable(true);
+                overlay.setClickable(true);
                 overlay.setPadding(dp(6), dp(4), dp(6), dp(4));
                 overlay.setBackgroundColor(0xE6222222);
                 overlay.addView(overlayText, new LinearLayout.LayoutParams(0,
@@ -835,11 +891,14 @@ public final class GameActivity extends NativeActivity {
 
                 int maxWidth = getResources().getDisplayMetrics().widthPixels - dp(24);
                 calibrationPopup[0] = new PopupWindow(overlay, Math.min(maxWidth, dp(560)),
-                        ViewGroup.LayoutParams.WRAP_CONTENT, false);
+                        ViewGroup.LayoutParams.WRAP_CONTENT, true);
                 calibrationPopup[0].setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(0xE6222222));
                 calibrationPopup[0].setOutsideTouchable(false);
-                calibrationPopup[0].setFocusable(false);
+                calibrationPopup[0].setFocusable(true);
+                calibrationPopup[0].setTouchable(true);
                 calibrationPopup[0].setElevation(dp(8));
+                if (Build.VERSION.SDK_INT >= 29) calibrationPopup[0].setTouchModal(false);
+                modCalibrationWindow = calibrationPopup[0];
                 dialog.dismiss();
                 calibrationPopup[0].showAtLocation(getWindow().getDecorView(),
                         Gravity.TOP | Gravity.CENTER_HORIZONTAL, 0, dp(18));
