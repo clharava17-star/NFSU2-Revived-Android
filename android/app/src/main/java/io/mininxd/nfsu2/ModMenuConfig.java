@@ -15,14 +15,9 @@ import java.nio.charset.StandardCharsets;
  * The current milestone persists options only; native cheat handlers are added separately.
  */
 final class ModMenuConfig {
-    static final int MIN_SHIFT_RPM = 5000;
-    static final int MAX_SHIFT_RPM = 11000;
-    static final int DEFAULT_SHIFT_RPM = 7000;
-
     static final class Settings {
         boolean master;
         boolean autoPerfectShift;
-        int autoShiftRpm = DEFAULT_SHIFT_RPM;
         int autoShiftTrackId = -1;
         int autoShiftRaceType = -1;
         boolean infiniteNos;
@@ -56,12 +51,6 @@ final class ModMenuConfig {
                 switch (key) {
                     case "master": settings.master = parseBoolean(value, false); break;
                     case "auto_perfect_shift": settings.autoPerfectShift = parseBoolean(value, false); break;
-                    case "auto_shift_rpm":
-                        try {
-                            int rpm = Integer.parseInt(value);
-                            settings.autoShiftRpm = Math.max(MIN_SHIFT_RPM, Math.min(MAX_SHIFT_RPM, rpm));
-                        } catch (NumberFormatException ignored) {}
-                        break;
                     case "auto_shift_track_id":
                         try { settings.autoShiftTrackId = Integer.parseInt(value); }
                         catch (NumberFormatException ignored) {}
@@ -90,10 +79,9 @@ final class ModMenuConfig {
         String data =
                 "# NFSU2 Revived Mod Menu configuration\n"
                 + "# This file is separate from Career Mode save data.\n"
-                + "version=3\n"
+                + "version=4\n"
                 + "master=" + onOff(settings.master) + "\n"
                 + "auto_perfect_shift=" + onOff(settings.autoPerfectShift) + "\n"
-                + "auto_shift_rpm=" + Math.max(MIN_SHIFT_RPM, Math.min(MAX_SHIFT_RPM, settings.autoShiftRpm)) + "\n"
                 + "auto_shift_track_id=" + settings.autoShiftTrackId + "\n"
                 + "auto_shift_race_type=" + settings.autoShiftRaceType + "\n"
                 + "infinite_nos=" + onOff(settings.infiniteNos) + "\n"
