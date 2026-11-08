@@ -689,8 +689,8 @@ public final class GameActivity extends NativeActivity {
 
             TextView status = new TextView(this);
             status.setText(modMenuPausedGameplay
-                    ? "Gameplay paused while this menu is open. Close the menu to resume. Cheats are not active yet."
-                    : "Not in driving mode: pause was skipped to avoid backing out of a menu/results screen. Start driving, then open MOD. Cheats are not active yet.");
+                    ? "Gameplay paused while this menu is open. Experimental Auto Shift can run only for an armed event; other gameplay cheats are still pending."
+                    : "Not in driving mode: pause was skipped to avoid backing out of a menu/results screen. Start the intended Drag event and open MOD while driving to arm Auto Shift.");
             status.setTextSize(13);
             form.addView(status);
 
@@ -909,7 +909,10 @@ public final class GameActivity extends NativeActivity {
                 @Override public void onStartTrackingTouch(android.widget.SeekBar bar) {}
                 @Override public void onStopTrackingTouch(android.widget.SeekBar bar) {}
             });
-            autoShift.setOnCheckedChangeListener((button, checked) -> rpm.setEnabled(checked));
+            autoShift.setOnCheckedChangeListener((button, checked) -> {
+                rpm.setEnabled(checked);
+                if (checked && !master.isChecked()) master.setChecked(true);
+            });
             form.addView(rpm);
 
             CheckBox infiniteNos = new CheckBox(this);
@@ -935,7 +938,7 @@ public final class GameActivity extends NativeActivity {
             form.addView(filePath);
 
             TextView safety = new TextView(this);
-            safety.setText("Saving these switches only writes modmenu.ini. No race memory, Career data, graphics or textures are changed by this prototype.");
+            safety.setText("Auto Shift sends the mapped Shift Up key only when the armed event, gear, RPM target and throttle checks match. Other cheats are not implemented. Settings are separate from Career data; no game memory values are overwritten.");
             safety.setTextSize(12);
             safety.setPadding(0, dp(8), 0, 0);
             form.addView(safety);
@@ -1112,6 +1115,10 @@ public final class GameActivity extends NativeActivity {
                 settings.master = master.isChecked();
                 settings.autoPerfectShift = autoShift.isChecked();
                 settings.autoShiftRpm = ModMenuConfig.MIN_SHIFT_RPM + rpm.getProgress();
+                if (settings.autoPerfectShift && !settings.master) {
+                    Toast.makeText(this, "Enable Master Cheat to run Auto Shift.", Toast.LENGTH_LONG).show();
+                    return;
+                }
                 if (!settings.autoPerfectShift) {
                     settings.autoShiftTrackId = -1;
                     settings.autoShiftRaceType = -1;
