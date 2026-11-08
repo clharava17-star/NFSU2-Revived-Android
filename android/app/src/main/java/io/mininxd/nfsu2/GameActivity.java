@@ -39,6 +39,7 @@ public final class GameActivity extends NativeActivity {
     private TextView status;
     private PopupWindow statusWindow;
     private PopupWindow controlsWindow;
+    private PopupWindow modCalibrationWindow;
     private DiagnosticOverlay diagnosticOverlay;
     private RacingControlsView touchControls;
     private boolean statusHidden;
@@ -599,20 +600,48 @@ public final class GameActivity extends NativeActivity {
             final float[] peakRpm = {0f};
             final java.util.ArrayList<Integer> observedShiftPeaks = new java.util.ArrayList<>();
             final Runnable[] calibrationPoll = new Runnable[1];
+            final PopupWindow[] calibrationPopup = {null};
+            final TextView[] calibrationOverlayText = {null};
+            final Runnable stopCalibration = () -> {
+                calibrationRunning[0] = false;
+                calibrationHandler.removeCallbacks(calibrationPoll[0]);
+                if (calibrationPopup[0] != null && calibrationPopup[0].isShowing()) {
+                    calibrationPopup[0].dismiss();
+                }
+                calibrationPopup[0] = null;
+                calibrationOverlayText[0] = null;
+                if (observedShiftPeaks.isEmpty()) {
+                    Toast.makeText(this, "No upshift samples captured. Try again during a Drag event.", Toast.LENGTH_LONG).show();
+                } else {
+                    int min = Integer.MAX_VALUE, max = 0, total = 0;
+                    for (int value : observedShiftPeaks) {
+                        min = Math.min(min, value);
+                        max = Math.max(max, value);
+                        total += value;
+                    }
+                    Toast.makeText(this, String.format(java.util.Locale.US,
+                            "Captured %d upshifts | peak %d–%d RPM | average %d RPM",
+                            observedShiftPeaks.size(), min, max, total / observedShiftPeaks.size()),
+                            Toast.LENGTH_LONG).show();
+                }
+            };
             calibrationPoll[0] = () -> {
                 if (!calibrationRunning[0]) return;
                 try {
                     if (!io.mininxd.nfsu2.net.RoamNativeBridge.isLoaded()) {
                         calibrationText.setText("Calibration stopped: telemetry bridge unavailable.");
-                        calibrationRunning[0] = false;
-                        calibrationButton.setText("Start shift calibration");
+                        stopCalibration.run();
                         return;
                     }
                     float[] sample = io.mininxd.nfsu2.net.RoamNativeBridge.nativeGetGameTelemetry();
                     if (sample == null || sample.length < 6 || sample[0] < 0.5f) {
                         previousGear[0] = -1;
                         peakRpm[0] = 0f;
-                        calibrationText.setText("Waiting for valid driving telemetry...");
+                        String waiting = "Waiting for valid driving telemetry..."
+                                + (sample != null && sample.length >= 2
+                                ? " Game state " + Math.round(sample[1]) : "");
+                        calibrationText.setText(waiting);
+                        if (calibrationOverlayText[0] != null) calibrationOverlayText[0].setText(waiting);
                     } else {
                         int gear = Math.round(sample[5]);
                         float currentRpm = sample[3];
@@ -633,9 +662,11 @@ public final class GameActivity extends NativeActivity {
                             peakRpm[0] = Math.max(peakRpm[0], currentRpm);
                         }
                         if (observedShiftPeaks.isEmpty()) {
-                            calibrationText.setText(String.format(java.util.Locale.US,
-                                    "Capturing... Gear %d | current peak %.0f RPM. Shift manually during a Drag event.",
-                                    Math.max(0, gear - 1), peakRpm[0]));
+                            String capturing = String.format(java.util.Locale.US,
+                                    "Capturing | Gear %d | %.0f RPM | shift manually",
+                                    Math.max(0, gear - 1), peakRpm[0]);
+                            calibrationText.setText(capturing);
+                            if (calibrationOverlayText[0] != null) calibrationOverlayText[0].setText(capturing);
                         } else {
                             int min = Integer.MAX_VALUE, max = 0, total = 0;
                             for (int value : observedShiftPeaks) {
@@ -643,9 +674,11 @@ public final class GameActivity extends NativeActivity {
                                 max = Math.max(max, value);
                                 total += value;
                             }
-                            calibrationText.setText(String.format(java.util.Locale.US,
-                                    "Captured %d upshifts | observed peak %d–%d RPM | average %d RPM. Diagnostic only; not the game's Perfect Shift window.",
-                                    observedShiftPeaks.size(), min, max, total / observedShiftPeaks.size()));
+                            String captured = String.format(java.util.Locale.US,
+                                    "Captured %d shifts | peak %d–%d RPM | avg %d RPM",
+                                    observedShiftPeaks.size(), min, max, total / observedShiftPeaks.size());
+                            calibrationText.setText(captured);
+                            if (calibrationOverlayText[0] != null) calibrationOverlayText[0].setText(captured);
                         }
                     }
                 } catch (Throwable error) {
@@ -769,25 +802,51 @@ public final class GameActivity extends NativeActivity {
                     .create();
             calibrationButton.setOnClickListener(button -> {
                 if (calibrationRunning[0]) {
-                    calibrationRunning[0] = false;
-                    calibrationHandler.removeCallbacks(calibrationPoll[0]);
-                    calibrationButton.setText("Start shift calibration");
-                    calibrationText.setText(observedShiftPeaks.isEmpty()
-                            ? "No upshift samples captured. Try again during a Drag event."
-                            : calibrationText.getText());
+                    stopCalibration.run();
                     return;
                 }
                 observedShiftPeaks.clear();
                 previousGear[0] = -1;
                 peakRpm[0] = 0f;
                 calibrationRunning[0] = true;
-                calibrationButton.setText("Stop shift calibration");
                 calibrationText.setText("Waiting for valid driving telemetry...");
+                TextView overlayText = new TextView(this);
+                overlayText.setText("Starting shift calibration...");
+                overlayText.setTextColor(Color.WHITE);
+                overlayText.setTextSize(12);
+                overlayText.setPadding(dp(12), dp(8), dp(12), dp(8));
+                calibrationOverlayText[0] = overlayText;
+
+                android.widget.Button stopButton = new android.widget.Button(this);
+                stopButton.setText("Stop");
+                stopButton.setAllCaps(false);
+                stopButton.setMinWidth(0);
+                stopButton.setOnClickListener(stop -> stopCalibration.run());
+
+                LinearLayout overlay = new LinearLayout(this);
+                overlay.setOrientation(LinearLayout.HORIZONTAL);
+                overlay.setGravity(Gravity.CENTER_VERTICAL);
+                overlay.setPadding(dp(6), dp(4), dp(6), dp(4));
+                overlay.setBackgroundColor(0xE6222222);
+                overlay.addView(overlayText, new LinearLayout.LayoutParams(0,
+                        ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+                overlay.addView(stopButton, new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+                int maxWidth = getResources().getDisplayMetrics().widthPixels - dp(24);
+                calibrationPopup[0] = new PopupWindow(overlay, Math.min(maxWidth, dp(560)),
+                        ViewGroup.LayoutParams.WRAP_CONTENT, false);
+                calibrationPopup[0].setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(0xE6222222));
+                calibrationPopup[0].setOutsideTouchable(false);
+                calibrationPopup[0].setFocusable(false);
+                calibrationPopup[0].setElevation(dp(8));
+                dialog.dismiss();
+                calibrationPopup[0].showAtLocation(getWindow().getDecorView(),
+                        Gravity.TOP | Gravity.CENTER_HORIZONTAL, 0, dp(18));
                 calibrationHandler.post(calibrationPoll[0]);
             });
             dialog.setOnDismissListener(ignored -> {
-                calibrationRunning[0] = false;
-                calibrationHandler.removeCallbacks(calibrationPoll[0]);
+                if (!calibrationRunning[0]) calibrationHandler.removeCallbacks(calibrationPoll[0]);
             });
             allOffButton.setOnClickListener(button -> {
                 ModMenuConfig.Settings disabled = new ModMenuConfig.Settings();
