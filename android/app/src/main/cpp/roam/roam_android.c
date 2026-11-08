@@ -68,7 +68,9 @@ static inline int probe_mem_readable(const void *ptr, size_t n) {
 }
 
 int roam_android_mem_readable(uint32_t a, uint32_t n) {
-    if (!g_p_mem_base || !*g_p_mem_base || !g_p_esp || *g_p_esp == 0) return 0;
+    // Reading a committed guest address does not require a live guest ESP.
+    // ESP is required only before invoking lifted game functions.
+    if (!g_p_mem_base || !*g_p_mem_base) return 0;
     if (a < 0x00010000u || (uint64_t)a + n < 0x00010000u || (uint64_t)a + n > 0x100000000ULL) return 0;
     if (g_p_guest_is_readable) {
         return g_p_guest_is_readable(a, n);
@@ -108,26 +110,33 @@ static inline void roam_android_patch_carpool(void) {
     }
 }
 
-int roam_android_init_symbols(void) {
-    if (!g_p_mem_base) {
+static int roam_android_resolve_symbols(void) {
+    if (!g_p_mem_base || !g_p_esp) {
         void *h = dlopen("libnfsu2_android.so", RTLD_NOLOAD | RTLD_GLOBAL);
         if (!h) h = dlopen("libnfsu2_android.so", RTLD_LAZY | RTLD_GLOBAL);
         if (!h) h = RTLD_DEFAULT;
 
-        g_p_mem_base = (ptrdiff_t *)dlsym(h, "g_mem_base");
-        g_p_recomp_lookup = (recomp_func_t (*)(uint32_t))dlsym(h, "recomp_lookup");
-        g_p_esp = (uint32_t *)dlsym(h, "g_esp");
-        g_p_eax = (uint32_t *)dlsym(h, "g_eax");
-        g_p_ecx = (uint32_t *)dlsym(h, "g_ecx");
-        g_p_edx = (uint32_t *)dlsym(h, "g_edx");
-        g_p_guest_is_readable = (int (*)(uint32_t, uint32_t))dlsym(h, "guest_is_readable");
+        if (!g_p_mem_base) g_p_mem_base = (ptrdiff_t *)dlsym(h, "g_mem_base");
+        if (!g_p_recomp_lookup) g_p_recomp_lookup = (recomp_func_t (*)(uint32_t))dlsym(h, "recomp_lookup");
+        if (!g_p_esp) g_p_esp = (uint32_t *)dlsym(h, "g_esp");
+        if (!g_p_eax) g_p_eax = (uint32_t *)dlsym(h, "g_eax");
+        if (!g_p_ecx) g_p_ecx = (uint32_t *)dlsym(h, "g_ecx");
+        if (!g_p_edx) g_p_edx = (uint32_t *)dlsym(h, "g_edx");
+        if (!g_p_guest_is_readable) g_p_guest_is_readable = (int (*)(uint32_t, uint32_t))dlsym(h, "guest_is_readable");
     }
+    return g_p_mem_base != NULL && *g_p_mem_base != 0;
+}
 
-    if (g_p_mem_base && *g_p_mem_base != 0 && g_p_esp && *g_p_esp != 0) {
-        if (!g_carpool_patched) roam_android_patch_carpool();
-        return 1;
-    }
-    return 0;
+/* Guest memory can be sampled at Present even when no guest function is on-stack.
+ * Keep the stronger ESP requirement for code that calls lifted game functions. */
+static int roam_android_memory_ready(void) {
+    return roam_android_resolve_symbols();
+}
+
+int roam_android_init_symbols(void) {
+    if (!roam_android_resolve_symbols() || !g_p_esp || *g_p_esp == 0) return 0;
+    if (!g_carpool_patched) roam_android_patch_carpool();
+    return 1;
 }
 
 /*
@@ -165,7 +174,7 @@ static void mod_telemetry_update(void) {
     const uint32_t track_va = 0x0089E7A0u;      /* G_TRACK */
     const uint32_t career_race_va = 0x00863470u;/* G_CAREER_RACE */
 
-    if (!g_p_mem_base || !*g_p_mem_base || !g_p_esp || !*g_p_esp) {
+    if (!g_p_mem_base || !*g_p_mem_base) {
         mod_telemetry_publish(next);
         return;
     }
@@ -1153,9 +1162,18 @@ static void resolution_frame_tick(void) {
 
 static _Atomic int s_tick_in_progress = 0;
 __attribute__((visibility("default"))) void nfs_roam_frame_tick(void) {
-    if (!roam_android_init_symbols() || !g_p_esp || !*g_p_esp) return;
+    // Sample read-only car telemetry whenever the guest memory image is ready.
+    // A non-zero guest ESP is not required for address-checked memory reads.
+    if (!roam_android_memory_ready()) return;
     if (atomic_exchange(&s_tick_in_progress, 1) != 0) return;
     mod_telemetry_update();
+
+    // The remainder of the free-roam companion may call lifted guest functions,
+    // so it must keep the original stricter live-stack requirement.
+    if (!roam_android_init_symbols()) {
+        atomic_store(&s_tick_in_progress, 0);
+        return;
+    }
     pace_frame();
     static int s_perf_bound = 0;
     if (!s_perf_bound || (g_frame_count % 300) == 0) {
