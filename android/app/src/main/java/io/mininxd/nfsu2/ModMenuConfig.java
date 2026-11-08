@@ -16,13 +16,15 @@ import java.nio.charset.StandardCharsets;
  */
 final class ModMenuConfig {
     static final int MIN_SHIFT_RPM = 5000;
-    static final int MAX_SHIFT_RPM = 7500;
+    static final int MAX_SHIFT_RPM = 11000;
     static final int DEFAULT_SHIFT_RPM = 7000;
 
     static final class Settings {
         boolean master;
         boolean autoPerfectShift;
         int autoShiftRpm = DEFAULT_SHIFT_RPM;
+        int autoShiftTrackId = -1;
+        int autoShiftRaceType = -1;
         boolean infiniteNos;
         boolean raceAssist;
         boolean perfectDrift;
@@ -59,6 +61,14 @@ final class ModMenuConfig {
                             int rpm = Integer.parseInt(value);
                             settings.autoShiftRpm = Math.max(MIN_SHIFT_RPM, Math.min(MAX_SHIFT_RPM, rpm));
                         } catch (NumberFormatException ignored) {}
+                        break;
+                    case "auto_shift_track_id":
+                        try { settings.autoShiftTrackId = Integer.parseInt(value); }
+                        catch (NumberFormatException ignored) {}
+                        break;
+                    case "auto_shift_race_type":
+                        try { settings.autoShiftRaceType = Integer.parseInt(value); }
+                        catch (NumberFormatException ignored) {}
                         break;
                     case "infinite_nos": settings.infiniteNos = parseBoolean(value, false); break;
                     case "race_assist": settings.raceAssist = parseBoolean(value, false); break;
