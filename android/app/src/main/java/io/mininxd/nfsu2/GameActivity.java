@@ -206,12 +206,6 @@ public final class GameActivity extends NativeActivity {
         final boolean[] waitForNextGearRpmDrop = {false};
         final int[] observedGear = {-1};
         final int[] observedCarType = {-1};
-        // RPM is refreshed once per physics frame. Track those changes rather
-        // than poll intervals, then predict the value at the next game frame.
-        final float[] previousFrameRpm = {-1.0f};
-        final long[] lastFrameRpmAt = {0L};
-        final float[] frameIntervalMs = {16.7f};
-        final float[] rpmRisePerMs = {0.0f};
         final Runnable[] loop = new Runnable[1];
 
         loop[0] = () -> {
@@ -255,17 +249,12 @@ public final class GameActivity extends NativeActivity {
                     waitForNextGearRpmDrop[0] = false;
                     observedGear[0] = -1;
                     observedCarType[0] = -1;
-                    previousFrameRpm[0] = -1.0f;
-                    lastFrameRpmAt[0] = 0L;
-                    rpmRisePerMs[0] = 0.0f;
-                    frameIntervalMs[0] = 16.7f;
                 } else {
                     float rpm = sample[3];
                     float throttle = sample[4];
                     long now = android.os.SystemClock.elapsedRealtime();
 
-                    // Keep shift confirmation separate from the RPM/frame baseline:
-                    // do not clear pendingGear before checking whether the game upshifted.
+                    // Keep shift confirmation separate from gear baseline updates.
                     boolean carChanged = observedCarType[0] != carType;
                     boolean gearChanged = observedGear[0] != gear;
                     if (carChanged) {
@@ -273,32 +262,12 @@ public final class GameActivity extends NativeActivity {
                         waitForNextGearRpmDrop[0] = false;
                         observedCarType[0] = carType;
                         observedGear[0] = gear;
-                        previousFrameRpm[0] = rpm;
-                        lastFrameRpmAt[0] = now;
-                        rpmRisePerMs[0] = 0.0f;
                         lastShiftAt[0] = now;
                     } else if (gearChanged) {
                         boolean acceptedUpshift = pendingGear[0] >= 2 && gear > pendingGear[0];
                         pendingGear[0] = -1;
                         waitForNextGearRpmDrop[0] = acceptedUpshift;
                         observedGear[0] = gear;
-                        previousFrameRpm[0] = rpm;
-                        lastFrameRpmAt[0] = now;
-                        rpmRisePerMs[0] = 0.0f;
-                    } else if (previousFrameRpm[0] < 0.0f) {
-                        previousFrameRpm[0] = rpm;
-                        lastFrameRpmAt[0] = now;
-                    } else if (Math.abs(rpm - previousFrameRpm[0]) >= 0.5f) {
-                        long frameDeltaMs = now - lastFrameRpmAt[0];
-                        if (frameDeltaMs >= 8L && frameDeltaMs <= 100L) {
-                            rpmRisePerMs[0] = (rpm - previousFrameRpm[0]) / (float) frameDeltaMs;
-                            frameIntervalMs[0] = Math.max(8.0f, Math.min(80.0f,
-                                    frameIntervalMs[0] * 0.75f + frameDeltaMs * 0.25f));
-                        } else {
-                            rpmRisePerMs[0] = 0.0f;
-                        }
-                        previousFrameRpm[0] = rpm;
-                        lastFrameRpmAt[0] = now;
                     }
 
                     if (pendingGear[0] >= 2 && now - pendingSince[0] > 1200L) {
@@ -307,6 +276,8 @@ public final class GameActivity extends NativeActivity {
                         waitForNextGearRpmDrop[0] = true;
                     }
 
+                    // The current gear has a different shift point; after a confirmed
+                    // change, re-arm when RPM is below that new gear's threshold.
                     if (waitForNextGearRpmDrop[0] && rpm < shiftUpRpm) {
                         waitForNextGearRpmDrop[0] = false;
                     }
@@ -315,23 +286,12 @@ public final class GameActivity extends NativeActivity {
                             && rpm > 0.0f && gear >= 2 && gear <= forwardGears;
                     float windowStart = shiftUpRpm;
                     float windowEnd = shiftUpRpm + 0.05f * perfectRangeRpm;
-                    float targetCenter = shiftUpRpm + 0.025f * perfectRangeRpm;
-
-                    // RateShift awards Perfect (1.0) only just above shiftUp[gear],
-                    // inside a 5%-of-R window. Predict to the next physics frame so
-                    // Shift-Up is delivered as RPM enters that narrow green window.
-                    long sinceFrameMs = lastFrameRpmAt[0] > 0L ? now - lastFrameRpmAt[0] : 0L;
-                    float timeToNextFrameMs = Math.max(0.0f,
-                            Math.min(frameIntervalMs[0], frameIntervalMs[0] - sinceFrameMs));
-                    float predictedNextFrameRpm = rpm
-                            + Math.max(0.0f, rpmRisePerMs[0]) * timeToNextFrameMs;
-                    boolean alreadyInsidePerfectWindow = rpm >= windowStart && rpm < windowEnd;
-                    boolean nextFrameInsidePerfectWindow = predictedNextFrameRpm >= targetCenter
-                            && predictedNextFrameRpm < windowEnd;
+                    // RateShift returns Perfect (1.0) only for RPM strictly above
+                    // shiftUp[gear] and less than 5% of R beyond it.
+                    boolean insidePerfectWindow = rpm > windowStart && rpm < windowEnd;
 
                     if (pendingGear[0] < 0 && !waitForNextGearRpmDrop[0]
-                            && accelerating
-                            && (alreadyInsidePerfectWindow || nextFrameInsidePerfectWindow)
+                            && accelerating && insidePerfectWindow
                             && now - lastShiftAt[0] >= 250L) {
                         pendingGear[0] = gear;
                         pendingSince[0] = now;
@@ -347,8 +307,7 @@ public final class GameActivity extends NativeActivity {
             } catch (Throwable error) {
                 android.util.Log.w("NFSU2-ModMenu", "Auto Shift telemetry: " + error.getClass().getSimpleName());
             }
-            // The exact Perfect window is narrow; poll every 4 ms and use the
-            // measured physics-frame cadence for the next-frame RPM estimate.
+            // Poll the actual game RPM frequently enough to catch the narrow RateShift window.
             handler.postDelayed(loop[0], 4L);
         };
 
