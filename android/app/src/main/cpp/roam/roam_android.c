@@ -34,6 +34,14 @@ uint32_t  *g_p_edx = NULL;
 recomp_func_t (*g_p_recomp_lookup)(uint32_t va) = NULL;
 int (*g_p_guest_is_readable)(uint32_t va, uint32_t bytes) = NULL;
 
+/* Explicit pointers from the guest runtime avoid relying on cross-namespace
+ * dlsym() for the two values required by read-only telemetry. */
+__attribute__((visibility("default"))) void nfs_roam_bind_guest_memory(
+        ptrdiff_t *mem_base, uint32_t *esp) {
+    if (mem_base) g_p_mem_base = mem_base;
+    if (esp) g_p_esp = esp;
+}
+
 static int s_probe_pipe[2] = { -1, -1 };
 static pthread_mutex_t s_probe_mu = PTHREAD_MUTEX_INITIALIZER;
 
@@ -111,7 +119,8 @@ static inline void roam_android_patch_carpool(void) {
 }
 
 static int roam_android_resolve_symbols(void) {
-    if (!g_p_mem_base || !g_p_esp) {
+    if (!g_p_mem_base || !g_p_esp || !g_p_recomp_lookup
+            || !g_p_eax || !g_p_ecx || !g_p_edx || !g_p_guest_is_readable) {
         void *h = dlopen("libnfsu2_android.so", RTLD_NOLOAD | RTLD_GLOBAL);
         if (!h) h = dlopen("libnfsu2_android.so", RTLD_LAZY | RTLD_GLOBAL);
         if (!h) h = RTLD_DEFAULT;
@@ -134,7 +143,8 @@ static int roam_android_memory_ready(void) {
 }
 
 int roam_android_init_symbols(void) {
-    if (!roam_android_resolve_symbols() || !g_p_esp || *g_p_esp == 0) return 0;
+    if (!roam_android_resolve_symbols() || !g_p_esp || *g_p_esp == 0
+            || !g_p_recomp_lookup || !g_p_eax || !g_p_ecx || !g_p_edx) return 0;
     if (!g_carpool_patched) roam_android_patch_carpool();
     return 1;
 }
