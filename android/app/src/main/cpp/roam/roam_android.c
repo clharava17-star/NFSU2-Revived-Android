@@ -160,7 +160,7 @@ int roam_android_init_symbols(void) {
  * walks pointers while the guest simulation is updating them.
  */
 static pthread_mutex_t g_mod_telemetry_mu = PTHREAD_MUTEX_INITIALIZER;
-static jfloat g_mod_telemetry[27] = {0, 0, 0, 0, -1, -99, 0, 0, -1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1, -1, -1, -1};
+static jfloat g_mod_telemetry[31] = {0, 0, 0, 0, -1, -99, 0, 0, -1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1, -1, -1, -1, -1, -1, -1, -1};
 static _Atomic uint32_t g_mod_frame_ticks = 0;
 static _Atomic uint32_t g_mod_snapshot_updates = 0;
 static _Atomic int g_mod_memory_ready = 0;
@@ -173,28 +173,29 @@ static _Atomic int g_mod_stack_ready = 0;
  * [13] frame-hook count, [14] telemetry-update count, [15] guest memory ready, [16] guest ESP ready,
  * [17] flow address readable, [18] player-slot address readable, [19] race address readable,
  * [20] g_mem_base symbol found, [21] game memory image mapped, [22] g_esp symbol found,
- * [23] player CarTypeInfo index, [24] active CarPhysicsInfo idle RPM,
- * [25] active CarPhysicsInfo max RPM, [26] Drag shift threshold RPM.
+ * [23] player CarTypeInfo index, [24] active CPI idle RPM,
+ * [25] active CPI max RPM, [26] active Drag-model shift threshold (redline - 100),
+ * [27] current DriveTrain::shiftUp[gear], [28] RateShift range R for that gear,
+ * [29] active forward gear count, [30] DriveTrain's current Gear enum (0=R,1=N,2=1st).
  *
- * CarTypeInfo is resolved from the live car object's +0x0C pointer using the same
- * G_CARTYPES table and 0x890-byte stride documented in roam_game.c. The tuned,
- * per-car CarPhysicsInfo is read through Car +0x10 (RideInfo), RideInfo +0x10
- * (RidePhysicsInfo), then inline CarPhysicsInfo at RidePhysicsInfo +0x30.
- * Its +0x1F0/+0x1F4/+0x1F8 fields are idle/redline/max RPM. The Drag model's
- * shift point is redline - 100 RPM (the same threshold used by its shift simulation).
- * These fields include installed upgrades and the active physics mode, unlike
- * the base CarTypeInfo sound RPM range.
- * Gear and throttle deliberately use the same fields as local_state() in roam_game.c.
+ * The active CPI is read through Car+0x10 (RideInfo), RideInfo+0x10 (RidePhysicsInfo),
+ * then inline CPI at RPI+0x30. The active DriveTrain is Car+0x34 (PhysicsMover),
+ * then PhysicsMover+0x4C. It provides shiftUp[9] at +0x84, perfectRangeMul at +0xE4,
+ * and perfType at +0xF0. PerfectShiftMaxRPMDiff is the game's 3x9 table at guest VA
+ * 0x007FBF60. RateShift returns Perfect (1.0) when RPM is just above shiftUp[gear]
+ * by less than 5% of R, where R = table[perfType*9+gear] * perfectRangeMul.
+ * The exact perfect window is (shiftUp, shiftUp + 0.05*R). No game memory is written.
+ * Gear and throttle use the player snapshot fields documented in local_state().
  */
 
-static void mod_telemetry_publish(const jfloat values[27]) {
+static void mod_telemetry_publish(const jfloat values[31]) {
     pthread_mutex_lock(&g_mod_telemetry_mu);
     memcpy(g_mod_telemetry, values, sizeof(g_mod_telemetry));
     pthread_mutex_unlock(&g_mod_telemetry_mu);
 }
 
 static void mod_telemetry_update(void) {
-    jfloat next[27] = {0, 0, 0, 0, -1.0f, -99.0f, 0, 0, -1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1.0f, -1.0f, -1.0f, -1.0f};
+    jfloat next[31] = {0, 0, 0, 0, -1.0f, -99.0f, 0, 0, -1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f};
     next[13] = (jfloat)atomic_load(&g_mod_frame_ticks);
     next[14] = (jfloat)(atomic_fetch_add(&g_mod_snapshot_updates, 1) + 1);
     next[15] = atomic_load(&g_mod_memory_ready) ? 1.0f : 0.0f;
@@ -297,6 +298,46 @@ static void mod_telemetry_update(void) {
         }
     }
 
+    /* Read the game's exact per-gear shift-up point and Perfect Shift range.
+       Car +0x28 must be movement mode 1 (PhysicsMover); Car +0x34 -> mover,
+       mover +0x4C -> DriveTrain. The shiftUp array uses Gear enum 0=R,1=N,2=1st. */
+    if (MR32(car + 0x28u) == 1u && rh_mem_committed(car + 0x34u, 4)) {
+        const uint32_t mover = MR32(car + 0x34u);
+        if (mover && mover <= 0xFFFFFF0Fu && rh_mem_committed(mover, 0x130u)
+                && rh_mem_committed(mover + 0x4Cu, 4)) {
+            const uint32_t drive_train = MR32(mover + 0x4Cu);
+            if (drive_train && drive_train <= 0xFFFFFF0Bu
+                    && rh_mem_committed(drive_train, 0xF4u)) {
+                const int drive_gear = (int32_t)MR32(drive_train + 0x3Cu);
+                const float shift_up = MRF32(drive_train + 0x84u + 4u * (uint32_t)(drive_gear >= 0 && drive_gear <= 8 ? drive_gear : 0));
+                const float perfect_range_mul = MRF32(drive_train + 0xE4u);
+                const int perf_type = (int32_t)MR32(drive_train + 0xF0u);
+                const uint32_t cpi = (ride_physics && ride_physics <= 0xFFFFFFCFu) ? ride_physics + 0x30u : 0u;
+                const int forward_gears = cpi && rh_mem_committed(cpi + 0x1C8u, 4)
+                        ? (int32_t)MR32(cpi + 0x1C8u) : 0;
+                const int max_diff_index = perf_type * 9 + drive_gear;
+                if (drive_gear >= 2 && drive_gear <= 7
+                        && forward_gears >= drive_gear - 1
+                        && forward_gears <= 6
+                        && perf_type >= 0 && perf_type <= 2
+                        && isfinite(shift_up) && shift_up >= 1000.0f && shift_up <= 20000.0f
+                        && isfinite(perfect_range_mul) && perfect_range_mul > 0.0f && perfect_range_mul <= 5.0f
+                        && max_diff_index >= 0 && max_diff_index < 27
+                        && rh_mem_committed(0x007FBF60u + 4u * (uint32_t)max_diff_index, 4)) {
+                    const float max_rpm_diff = MRF32(0x007FBF60u + 4u * (uint32_t)max_diff_index);
+                    const float perfect_range = max_rpm_diff * perfect_range_mul;
+                    if (isfinite(max_rpm_diff) && max_rpm_diff > 0.0f
+                            && isfinite(perfect_range) && perfect_range > 0.0f && perfect_range <= 5000.0f) {
+                        next[27] = shift_up;
+                        next[28] = perfect_range;
+                        next[29] = (jfloat)forward_gears;
+                        next[30] = (jfloat)drive_gear;
+                    }
+                }
+            }
+        }
+    }
+
     float throttle = -1.0f;
     if (car <= 0xFFFFFFCBu && rh_mem_committed(car + 0x30u, 4)) {
         const uint32_t controller = MR32(car + 0x30u);
@@ -335,13 +376,13 @@ static void mod_telemetry_refresh(void) {
 }
 
 static jfloatArray mod_telemetry_array(JNIEnv *env) {
-    jfloat snapshot[27];
+    jfloat snapshot[31];
     pthread_mutex_lock(&g_mod_telemetry_mu);
     memcpy(snapshot, g_mod_telemetry, sizeof(snapshot));
     pthread_mutex_unlock(&g_mod_telemetry_mu);
 
-    jfloatArray result = (*env)->NewFloatArray(env, 27);
-    if (result) (*env)->SetFloatArrayRegion(env, result, 0, 27, snapshot);
+    jfloatArray result = (*env)->NewFloatArray(env, 31);
+    if (result) (*env)->SetFloatArrayRegion(env, result, 0, 31, snapshot);
     return result;
 }
 
