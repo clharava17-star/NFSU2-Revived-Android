@@ -670,11 +670,12 @@ public final class GameActivity extends NativeActivity {
                     openedEvent = io.mininxd.nfsu2.net.RoamNativeBridge.nativeGetGameTelemetry();
                 }
             } catch (Throwable ignored) {}
-            final boolean activeEventAtOpen = openedEvent != null && openedEvent.length >= 13
+            final boolean[] activeEventAtOpen = {openedEvent != null && openedEvent.length >= 13
                     && openedEvent[0] > 0.5f && Math.round(openedEvent[1]) == 6
-                    && Math.round(openedEvent[8]) == 4 && openedEvent[12] > 0.5f;
-            final int eventTrackAtOpen = activeEventAtOpen ? Math.round(openedEvent[10]) : -1;
-            final int eventTypeAtOpen = activeEventAtOpen ? Math.round(openedEvent[9]) : -1;
+                    && Math.round(openedEvent[8]) == 4 && openedEvent[12] > 0.5f};
+            final int[] eventTrackAtOpen = {activeEventAtOpen[0] ? Math.round(openedEvent[10]) : -1};
+            final int[] eventTypeAtOpen = {activeEventAtOpen[0] ? Math.round(openedEvent[9]) : -1};
+            final TextView[] autoShiftScopeLabel = {null};
 
             // Pause through the same Escape key used by the in-game HUD. Do not
             // inject Escape on event lobby/results screens: there it acts as Back.
@@ -718,6 +719,19 @@ public final class GameActivity extends NativeActivity {
                     int raceState = Math.round(t[8]);
                     int raceType = Math.round(t[9]);
                     int track = Math.round(t[10]);
+                    // Let Read Live Telemetry refresh the event scope as well as the
+                    // snapshot. The event may become fully readable after the menu opens.
+                    boolean liveActiveEvent = t[0] > 0.5f && flow == 6
+                            && raceState == 4 && t[12] > 0.5f && raceType >= 0 && track >= 0;
+                    if (liveActiveEvent) {
+                        activeEventAtOpen[0] = true;
+                        eventTrackAtOpen[0] = track;
+                        eventTypeAtOpen[0] = raceType;
+                        if (autoShiftScopeLabel[0] != null) {
+                            autoShiftScopeLabel[0].setText("Active event detected: race type " + raceType
+                                    + " | track " + track + ". Saving Auto Shift will arm it only for this event.");
+                        }
+                    }
                     String playerPointer = t[6] > 0.5f ? "OK" : "missing";
                     String carPointer = t[7] > 0.5f ? "OK" : "missing";
                     if (t[0] < 0.5f) {
@@ -900,9 +914,9 @@ public final class GameActivity extends NativeActivity {
             form.addView(autoShift);
 
             TextView autoShiftScope = new TextView(this);
-            if (activeEventAtOpen) {
-                autoShiftScope.setText("Active event detected: race type " + eventTypeAtOpen
-                        + " | track " + eventTrackAtOpen
+            if (activeEventAtOpen[0]) {
+                autoShiftScope.setText("Active event detected: race type " + eventTypeAtOpen[0]
+                        + " | track " + eventTrackAtOpen[0]
                         + ". Saving Auto Shift will arm it only for this event. Open MOD while driving in the Drag event.");
             } else if (settings.autoShiftTrackId >= 0) {
                 autoShiftScope.setText("Auto Shift is armed for race type " + settings.autoShiftRaceType
@@ -913,6 +927,7 @@ public final class GameActivity extends NativeActivity {
             }
             autoShiftScope.setTextSize(12);
             autoShiftScope.setPadding(0, dp(2), 0, dp(4));
+            autoShiftScopeLabel[0] = autoShiftScope;
             form.addView(autoShiftScope);
 
             TextView rpmLabel = new TextView(this);
@@ -1147,9 +1162,9 @@ public final class GameActivity extends NativeActivity {
                 if (!settings.autoPerfectShift) {
                     settings.autoShiftTrackId = -1;
                     settings.autoShiftRaceType = -1;
-                } else if (activeEventAtOpen) {
-                    settings.autoShiftTrackId = eventTrackAtOpen;
-                    settings.autoShiftRaceType = eventTypeAtOpen;
+                } else if (activeEventAtOpen[0]) {
+                    settings.autoShiftTrackId = eventTrackAtOpen[0];
+                    settings.autoShiftRaceType = eventTypeAtOpen[0];
                     autoShiftArmed = true;
                 } else {
                     // Preserve the ON preference even when telemetry cannot identify an event.
@@ -1163,7 +1178,7 @@ public final class GameActivity extends NativeActivity {
                     String savedMessage;
                     if (!settings.autoPerfectShift) {
                         savedMessage = "Mod Menu settings saved. Gameplay cheats remain off.";
-                    } else if (autoShiftArmed && activeEventAtOpen) {
+                    } else if (autoShiftArmed && activeEventAtOpen[0]) {
                         savedMessage = "Settings saved. Experimental Auto Shift armed for this event at "
                                 + settings.autoShiftRpm + " RPM.";
                     } else if (autoShiftArmed) {
