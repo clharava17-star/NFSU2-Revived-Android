@@ -48,6 +48,12 @@ This feature branch removes the tracked `android/app/release.jks` from its propo
 
 When those secrets are absent, the workflow uses the generated Android debug key for test builds only. A debug-signed test APK is not a production update for an existing installation. The fork's `main` branch and earlier Git history still retain upstream content until this draft PR is reviewed and merged; removing a file from the current tree does not erase its historic blob.
 
+## Android storage permission diagnostic
+
+The user observed a failed write to `/storage/emulated/0/NFSU2/mods/NFSU2_ModMenu/modmenu.ini` on the separate Mod Edition package. Android 11+ grants `MANAGE_EXTERNAL_STORAGE` per application package; it is not inherited from the original NFSU2 Revived package. The Mod Menu now checks `Environment.isExternalStorageManager()` and, when missing, offers a direct route to that Mod Edition app's special-access settings. After granting access, the user must return to the game and tap **Save settings** again. If access is already granted but the write still fails, the dialog displays the exact configuration path for diagnosis.
+
+The user should grant this access only to the Mod Edition app if they accept the broad external-storage permission. Do not move the config into the Career save directory.
+
 ## Telemetry source and limits
 
 The current read-only snapshot mirrors the documented NFSU2 v1.2 US player-car layout used by the Android port:
@@ -77,7 +83,7 @@ Implemented on `feature/mod-menu-v0.2`:
 
 Implemented as read-only diagnostic groundwork:
 - The Android free-roam companion publishes a guarded snapshot of game-flow state, player-car speed, RPM, throttle and raw gearbox value from the matching NFSU2 v1.2 guest address space.
-- The Mod Menu exposes a manual **Read live telemetry** action. It does not write to the game.
+- The Mod Menu exposes a manual **Read live telemetry** action. It does not write to the game. Invalid snapshots now report the observed game-flow value or explain that the car/gearbox pointer is not ready.
 - The Mod Menu includes an optional **Start shift calibration** capture. It observes gear increases and the peak RPM seen before each upshift during a manually driven Drag event; it is diagnostic only and does not press Shift or claim to detect the game's Perfect Shift judgement.
 - The snapshot is copied under a mutex; pointers are checked against committed guest-memory ranges before dereference.
 - The raw gear counter is interpreted as 0 reverse, 1 neutral, 2 first gear, and so on.
