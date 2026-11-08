@@ -4,6 +4,14 @@ Target base: current `main` branch (v0.15.17 at the time of audit).
 Working branch: `feature/mod-menu-v0.2`.
 
 ## Root-cause repair for empty Drag telemetry
+### Frame-hook linker namespace fix
+
+The user's diagnostic screenshot from the diagnostic APK reports `Hooks 0 | samples 0 | memory missing | ESP idle`, with all guest global addresses unmapped. This places the failure before Player/Car pointer traversal: `nfs_roam_frame_tick()` is not being executed (or its symbol is not being reached at all).
+
+The runtime previously resolved the companion with `dlopen("libnfsu2_roam.so")` and `dlsym()` from the NativeActivity D3D9 Present path, while Java separately loads the same library through `System.loadLibrary()`. Android linker namespaces can make a class-loader-loaded library invisible to a different native caller namespace even within the same process. The new build links the imported `libnfsu2_roam.so` directly as a dependency of `nfsu2_android` in CMake and calls the exported `nfs_roam_frame_tick()` directly from `guest_runtime.cpp`. This removes runtime symbol-discovery ambiguity and ensures both the Java JNI telemetry reader and game-frame hook use the same shared-library instance.
+
+This change must be built and the device diagnostic rechecked. Acceptance: `Hooks` and `samples` become non-zero during gameplay; only then proceed to confirm guest memory base and the version-specific flow/player/race addresses. It is not yet proof that those game addresses are correct or that Auto Shift works.
+
 
 The user confirmed the car is physically at the Drag start/finish line while the Mod Menu still reported `Flow 0 | Player* missing | Car* missing | Type -1 | Track -1`. The previous telemetry path incorrectly required a non-zero guest ESP before even reading committed guest memory. The companion's Direct3D Present hook can be called at a point where the guest stack is idle, even though its memory image is already mapped. This short-circuited the update and left the static initial snapshot visible.
 
