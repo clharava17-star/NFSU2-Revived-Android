@@ -39,13 +39,9 @@ public final class GameActivity extends NativeActivity {
     private TextView status;
     private PopupWindow statusWindow;
     private PopupWindow controlsWindow;
-    private PopupWindow modCalibrationWindow;
-    private boolean modCalibrationRunning;
     // Only send Escape when the game is actually in driving mode. Menu/results
     // screens must not receive a synthetic Back press when MOD is opened.
     private boolean modMenuPausedGameplay;
-    private Handler modCalibrationHandler;
-    private Runnable modCalibrationPoll;
     private DiagnosticOverlay diagnosticOverlay;
     private RacingControlsView touchControls;
     private boolean statusHidden;
@@ -202,16 +198,17 @@ public final class GameActivity extends NativeActivity {
             return;
         }
 
-        final int targetRpm = config.autoShiftRpm;
         final int armedTrack = config.autoShiftTrackId;
         final int armedRaceType = config.autoShiftRaceType;
         final int shiftScan = keyShiftUp > 0 ? keyShiftUp : 0x2a;
+        final float shiftRangeFraction = 0.90f;
         final Handler handler = new Handler(Looper.getMainLooper());
         final int[] pendingGear = {-1};
         final long[] pendingSince = {0L};
         final long[] lastShiftAt = {0L};
         final boolean[] waitForRpmDrop = {false};
         final int[] observedGear = {-1};
+        final int[] observedCarType = {-1};
         final float[] previousRpm = {-1.0f};
         final long[] previousRpmAt = {0L};
         final Runnable[] loop = new Runnable[1];
@@ -224,7 +221,7 @@ public final class GameActivity extends NativeActivity {
             }
             try {
                 float[] sample = io.mininxd.nfsu2.net.RoamNativeBridge.nativeGetGameTelemetry();
-                boolean matchingEvent = sample != null && sample.length >= 13
+                boolean matchingEvent = sample != null && sample.length >= 26
                         && sample[0] > 0.5f
                         && Math.round(sample[1]) == 6
                         && Math.round(sample[8]) == 4
@@ -232,10 +229,19 @@ public final class GameActivity extends NativeActivity {
                         && Math.round(sample[9]) == armedRaceType
                         && Math.round(sample[10]) == armedTrack;
 
-                if (!matchingEvent) {
+                int carType = matchingEvent ? Math.round(sample[23]) : -1;
+                float idleRpm = matchingEvent ? sample[24] : -1.0f;
+                float maxRpm = matchingEvent ? sample[25] : -1.0f;
+                boolean validEngineRange = carType >= 0
+                        && Float.isFinite(idleRpm) && Float.isFinite(maxRpm)
+                        && idleRpm >= 300.0f && maxRpm >= idleRpm + 1000.0f
+                        && maxRpm <= 20000.0f;
+
+                if (!matchingEvent || !validEngineRange) {
                     pendingGear[0] = -1;
                     waitForRpmDrop[0] = false;
                     observedGear[0] = -1;
+                    observedCarType[0] = -1;
                     previousRpm[0] = -1.0f;
                     previousRpmAt[0] = 0L;
                 } else {
@@ -244,8 +250,20 @@ public final class GameActivity extends NativeActivity {
                     float throttle = sample[4];
                     long now = android.os.SystemClock.elapsedRealtime();
 
-                    // Require a real throttle reading. A missing controller value must
-                    // never be interpreted as acceleration merely because the car moves.
+                    // Read the active vehicle's own CarTypeInfo range every poll.
+                    // A car switch automatically resets shift confirmation and picks
+                    // up the new car's RPM range; no manual per-car calibration exists.
+                    if (observedCarType[0] != carType) {
+                        pendingGear[0] = -1;
+                        waitForRpmDrop[0] = false;
+                        observedGear[0] = -1;
+                        previousRpm[0] = -1.0f;
+                        previousRpmAt[0] = 0L;
+                        observedCarType[0] = carType;
+                        lastShiftAt[0] = now;
+                    }
+
+                    float targetRpm = idleRpm + (maxRpm - idleRpm) * shiftRangeFraction;
                     boolean accelerating = throttle >= 0.25f && throttle <= 1.5f
                             && rpm > 0.0f && gear >= 1 && gear < 6;
 
@@ -266,8 +284,6 @@ public final class GameActivity extends NativeActivity {
                         previousRpmAt[0] = now;
                     }
 
-                    // Predict only one polling interval ahead. This compensates for
-                    // the 16 ms sampling cadence without guessing a long input latency.
                     float predictedRpm = rpm + Math.max(0.0f, rpmRisePerMs) * 16.0f;
                     predictedRpm = Math.min(predictedRpm, rpm + 500.0f);
 
@@ -275,7 +291,6 @@ public final class GameActivity extends NativeActivity {
                         pendingGear[0] = -1;
                         waitForRpmDrop[0] = true;
                     } else if (pendingGear[0] >= 1 && now - pendingSince[0] > 1200L) {
-                        // The game did not accept the input: do not spam Shift-Up.
                         pendingGear[0] = -1;
                         waitForRpmDrop[0] = true;
                     }
@@ -402,20 +417,6 @@ public final class GameActivity extends NativeActivity {
      * Android 11+ grants all-files access per package. Mod Edition has its own application ID,
      * so permission granted to the original NFSU2 app does not automatically carry over.
      */
-    private void stopModCalibration() {
-        modCalibrationRunning = false;
-        if (modCalibrationHandler != null && modCalibrationPoll != null) {
-            modCalibrationHandler.removeCallbacks(modCalibrationPoll);
-        }
-        if (modCalibrationWindow != null && modCalibrationWindow.isShowing()) {
-            modCalibrationWindow.dismiss();
-        }
-        modCalibrationWindow = null;
-        modCalibrationHandler = null;
-        modCalibrationPoll = null;
-        Toast.makeText(this, "Shift calibration stopped.", Toast.LENGTH_SHORT).show();
-    }
-
     private boolean hasModMenuStorageAccess() {
         if (Build.VERSION.SDK_INT >= 30) return Environment.isExternalStorageManager();
         return checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE)
@@ -692,7 +693,6 @@ public final class GameActivity extends NativeActivity {
     private void showModMenu() {
         if (isFinishing() || isDestroyed()) return;
         // If sampling is active, stop it first, then continue opening the paused Mod Menu.
-        if (modCalibrationRunning) stopModCalibration();
         stopAutoShiftController();
         runOnUiThread(() -> {
             // Capture the event before pausing, so Auto Shift can be scoped to this exact Drag event.
@@ -743,7 +743,7 @@ public final class GameActivity extends NativeActivity {
                         return;
                     }
                     float[] t = io.mininxd.nfsu2.net.RoamNativeBridge.nativeGetGameTelemetry();
-                    if (t == null || t.length < 13) {
+                    if (t == null || t.length < 26) {
                         telemetryText.setText("Telemetry snapshot unavailable or bridge is outdated. Reinstall the latest Mod Edition build.");
                         return;
                     }
@@ -791,6 +791,11 @@ public final class GameActivity extends NativeActivity {
                             ? "n/a"
                             : String.format(java.util.Locale.US, "%.0f%%", t[4] * 100.0f);
                     String raceLabel = t[12] > 0.5f ? "RACE ACTIVE" : "not in active race";
+                    String engineLabel = t[23] >= 0.0f && t[25] > t[24] + 1000.0f
+                            ? String.format(java.util.Locale.US,
+                                    "Car type %d | idle %.0f RPM | redline %.0f RPM | Auto Shift point %.0f RPM",
+                                    Math.round(t[23]), t[24], t[25], t[24] + (t[25] - t[24]) * 0.90f)
+                            : "Current car engine range unavailable | Auto Shift will stay idle";
                     String diagnostics = t.length >= 23
                             ? String.format(java.util.Locale.US,
                                     "\nFrame hooks %d | JNI reads %d | base symbol %s"
@@ -803,8 +808,8 @@ public final class GameActivity extends NativeActivity {
                                     t[18] > 0.5f ? "readable" : "unmapped")
                             : "";
                     telemetryText.setText(String.format(java.util.Locale.US,
-                            "Live: %.0f RPM | Gear %s | %.0f km/h | Throttle %s\nFlow %d | Race state %s | Type %d | Track %d | %s%s",
-                            t[3], gearLabel, t[2] * 3.6f, throttle,
+                            "Live: %.0f RPM | Gear %s | %.0f km/h | Throttle %s\n%s\nFlow %d | Race state %s | Type %d | Track %d | %s%s",
+                            t[3], gearLabel, t[2] * 3.6f, throttle, engineLabel,
                             flow, raceState < 0 ? "n/a" : String.valueOf(raceState),
                             raceType, track, raceLabel, diagnostics));
                 } catch (Throwable error) {
@@ -813,168 +818,11 @@ public final class GameActivity extends NativeActivity {
             });
             form.addView(readTelemetryButton);
 
-            TextView calibrationText = new TextView(this);
-            calibrationText.setText("Calibration runs over the race screen. Gas and game controls must remain usable; accelerate and manually upshift several times, then tap Stop.");
-            calibrationText.setTextSize(12);
-            calibrationText.setPadding(0, dp(6), 0, dp(2));
-            form.addView(calibrationText);
-
-            android.widget.Button calibrationButton = new android.widget.Button(this);
-            calibrationButton.setText("Start shift calibration");
-            calibrationButton.setAllCaps(false);
-            form.addView(calibrationButton);
-
-            final android.os.Handler calibrationHandler = new android.os.Handler(android.os.Looper.getMainLooper());
-            modCalibrationHandler = calibrationHandler;
-            final boolean[] calibrationRunning = {false};
-            final int[] previousGear = {-1};
-            final float[] peakRpm = {0f};
-            final java.util.ArrayList<Integer> observedShiftPeaks = new java.util.ArrayList<>();
-            final Runnable[] calibrationPoll = new Runnable[1];
-            final PopupWindow[] calibrationPopup = {null};
-            final TextView[] calibrationOverlayText = {null};
-            // The stop action is created before the RPM controls. Keep references so a
-            // completed calibration can update the still-open dialog's slider and label.
-            final TextView[] rpmLabelRef = {null};
-            final android.widget.SeekBar[] rpmSeekBarRef = {null};
-            final Runnable stopCalibration = () -> {
-                calibrationRunning[0] = false;
-                modCalibrationRunning = false;
-                calibrationHandler.removeCallbacks(calibrationPoll[0]);
-                if (calibrationPopup[0] != null && calibrationPopup[0].isShowing()) {
-                    calibrationPopup[0].dismiss();
-                }
-                calibrationPopup[0] = null;
-                modCalibrationWindow = null;
-                modCalibrationHandler = null;
-                modCalibrationPoll = null;
-                calibrationOverlayText[0] = null;
-                if (observedShiftPeaks.isEmpty()) {
-                    Toast.makeText(this, "No upshift samples captured. Calibration stopped.", Toast.LENGTH_LONG).show();
-                } else {
-                    java.util.ArrayList<Integer> sortedPeaks = new java.util.ArrayList<>(observedShiftPeaks);
-                    java.util.Collections.sort(sortedPeaks);
-                    int min = sortedPeaks.get(0);
-                    int max = sortedPeaks.get(sortedPeaks.size() - 1);
-                    int mid = sortedPeaks.size() / 2;
-                    int learnedRpm = sortedPeaks.size() % 2 == 0
-                            ? (sortedPeaks.get(mid - 1) + sortedPeaks.get(mid)) / 2
-                            : sortedPeaks.get(mid);
-                    learnedRpm = Math.max(ModMenuConfig.MIN_SHIFT_RPM,
-                            Math.min(ModMenuConfig.MAX_SHIFT_RPM, learnedRpm));
-                    ModMenuConfig.Settings learned = ModMenuConfig.load(this);
-                    learned.autoShiftRpm = learnedRpm;
-                    boolean saved = ModMenuConfig.save(this, learned);
-                    if (saved) {
-                        // Keep the in-memory Settings instance in sync too: pressing
-                        // Save settings after calibration must not overwrite the learned RPM.
-                        settings.autoShiftRpm = learnedRpm;
-                        if (rpmSeekBarRef[0] != null) {
-                            rpmSeekBarRef[0].setProgress(learnedRpm - ModMenuConfig.MIN_SHIFT_RPM);
-                        }
-                        if (rpmLabelRef[0] != null) {
-                            rpmLabelRef[0].setText("Auto Shift target: " + learnedRpm + " RPM");
-                        }
-                    }
-                    String message = String.format(java.util.Locale.US,
-                            saved
-                                    ? "Calibration saved: %d manual shifts | observed %d–%d RPM | Auto Shift target %d RPM"
-                                    : "Captured %d manual shifts | observed %d–%d RPM | settings could not be saved",
-                            observedShiftPeaks.size(), min, max, learnedRpm);
-                    Toast.makeText(this, message, Toast.LENGTH_LONG).show();
-                }
-                new Handler(Looper.getMainLooper()).postDelayed(this::startAutoShiftController, 240L);
-            };
-            calibrationPoll[0] = () -> {
-                if (!calibrationRunning[0]) return;
-                try {
-                    if (!io.mininxd.nfsu2.net.RoamNativeBridge.isLoaded()) {
-                        calibrationText.setText("Calibration stopped: telemetry bridge unavailable.");
-                        stopCalibration.run();
-                        return;
-                    }
-                    float[] sample = io.mininxd.nfsu2.net.RoamNativeBridge.nativeGetGameTelemetry();
-                    if (sample == null || sample.length < 13) {
-                        previousGear[0] = -1;
-                        peakRpm[0] = 0f;
-                        String waiting = "Telemetry bridge is outdated. Reinstall the latest build.";
-                        calibrationText.setText(waiting);
-                        if (calibrationOverlayText[0] != null) calibrationOverlayText[0].setText(waiting);
-                    } else if (sample[0] < 0.5f || sample[12] < 0.5f) {
-                        previousGear[0] = -1;
-                        peakRpm[0] = 0f;
-                        String waiting = sample[0] < 0.5f
-                                ? String.format(java.util.Locale.US,
-                                    "No car snapshot | Flow %d | Player* %s | Car* %s",
-                                    Math.round(sample[1]), sample[6] > 0.5f ? "OK" : "missing",
-                                    sample[7] > 0.5f ? "OK" : "missing")
-                                : String.format(java.util.Locale.US,
-                                    "Car found, waiting for active race | Flow %d | Race state %d | Type %d | Track %d",
-                                    Math.round(sample[1]), Math.round(sample[8]),
-                                    Math.round(sample[9]), Math.round(sample[10]));
-                        calibrationText.setText(waiting);
-                        if (calibrationOverlayText[0] != null) calibrationOverlayText[0].setText(waiting);
-                    } else {
-                        int gear = Math.round(sample[5]);
-                        float currentRpm = sample[3];
-                        float currentThrottle = sample[4];
-                        boolean loadedThrottle = currentThrottle >= 0.25f && currentThrottle <= 1.5f;
-                        if (previousGear[0] < 0) {
-                            previousGear[0] = gear;
-                            peakRpm[0] = loadedThrottle ? currentRpm : 0f;
-                        } else if (gear <= 0) {
-                            // Reverse/neutral is not a shift sample; start a fresh baseline.
-                            previousGear[0] = gear;
-                            peakRpm[0] = 0f;
-                        } else if (gear > previousGear[0]) {
-                            // Only learn a pre-shift peak recorded while the driver was
-                            // actually applying throttle; idle/starting-grid changes do not count.
-                            if (previousGear[0] >= 1 && peakRpm[0] >= ModMenuConfig.MIN_SHIFT_RPM) {
-                                observedShiftPeaks.add(Math.round(peakRpm[0]));
-                                while (observedShiftPeaks.size() > 8) observedShiftPeaks.remove(0);
-                            }
-                            previousGear[0] = gear;
-                            peakRpm[0] = loadedThrottle ? currentRpm : 0f;
-                        } else if (gear != previousGear[0]) {
-                            previousGear[0] = gear;
-                            peakRpm[0] = loadedThrottle ? currentRpm : 0f;
-                        } else if (loadedThrottle) {
-                            // Keep the highest loaded RPM while this gear is engaged.
-                            peakRpm[0] = Math.max(peakRpm[0], currentRpm);
-                        }
-                        int shownThrottle = currentThrottle < 0f ? -1 : Math.round(currentThrottle * 100f);
-                        String captureState = !loadedThrottle
-                                ? String.format(java.util.Locale.US,
-                                    "Waiting for throttle | Gear %d | %.0f RPM | Throttle %s | %d shifts",
-                                    gear, currentRpm, shownThrottle < 0 ? "n/a" : shownThrottle + "%",
-                                    observedShiftPeaks.size())
-                                : String.format(java.util.Locale.US,
-                                    "Capturing | Gear %d | %.0f RPM | Throttle %d%% | %d shifts",
-                                    gear, peakRpm[0], shownThrottle, observedShiftPeaks.size());
-                        calibrationText.setText(captureState);
-                        if (calibrationOverlayText[0] != null) calibrationOverlayText[0].setText(captureState);
-                        if (!observedShiftPeaks.isEmpty()) {
-                            int min = Integer.MAX_VALUE, max = 0, total = 0;
-                            for (int value : observedShiftPeaks) {
-                                min = Math.min(min, value);
-                                max = Math.max(max, value);
-                                total += value;
-                            }
-                            String captured = String.format(java.util.Locale.US,
-                                    "Captured %d shifts | peak %d–%d RPM | avg %d RPM | Gear %d | %.0f RPM | Throttle %s",
-                                    observedShiftPeaks.size(), min, max, total / observedShiftPeaks.size(),
-                                    gear, currentRpm,
-                                    shownThrottle < 0 ? "n/a" : shownThrottle + "%");
-                            calibrationText.setText(captured);
-                            if (calibrationOverlayText[0] != null) calibrationOverlayText[0].setText(captured);
-                        }
-                    }
-                } catch (Throwable error) {
-                    calibrationText.setText("Calibration read failed: " + error.getClass().getSimpleName());
-                }
-                if (calibrationRunning[0]) calibrationHandler.postDelayed(calibrationPoll[0], 20);
-            };
-            modCalibrationPoll = calibrationPoll[0];
+            TextView autoShiftInfo = new TextView(this);
+            autoShiftInfo.setText("Universal Auto Shift: the game reads the current car's own engine idle/max RPM and calculates the shift point automatically. No per-car setup or manual calibration is required.");
+            autoShiftInfo.setTextSize(12);
+            autoShiftInfo.setPadding(0, dp(8), 0, dp(4));
+            form.addView(autoShiftInfo);
 
             CheckBox master = new CheckBox(this);
             master.setText("Master Cheat — enable saved mod options");
@@ -982,7 +830,7 @@ public final class GameActivity extends NativeActivity {
             form.addView(master);
 
             CheckBox autoShift = new CheckBox(this);
-            autoShift.setText("Auto Shift — this Drag event only (experimental RPM trigger)");
+            autoShift.setText("Auto Shift — armed Drag event, every car automatically");
             autoShift.setChecked(settings.autoPerfectShift);
             form.addView(autoShift);
 
@@ -990,11 +838,11 @@ public final class GameActivity extends NativeActivity {
             if (activeEventAtOpen[0]) {
                 autoShiftScope.setText("Active event detected: race type " + eventTypeAtOpen[0]
                         + " | track " + eventTrackAtOpen[0]
-                        + ". Saving Auto Shift will arm it only for this event. Open MOD while driving in the Drag event.");
+                        + ". Saving Auto Shift arms this Drag event; the car's RPM range is detected automatically.");
             } else if (settings.autoShiftTrackId >= 0) {
                 autoShiftScope.setText("Auto Shift is armed for race type " + settings.autoShiftRaceType
                         + " | track " + settings.autoShiftTrackId
-                        + ". To change its event, open MOD while driving in the intended Drag event.");
+                        + ". Open MOD while driving in a Drag event to arm a different event. Vehicle RPM is detected automatically.");
             } else {
                 autoShiftScope.setText("To arm Auto Shift: start a Drag race, wait until the car is driving, then open MOD and save with Auto Shift ON.");
             }
@@ -1002,31 +850,6 @@ public final class GameActivity extends NativeActivity {
             autoShiftScope.setPadding(0, dp(2), 0, dp(4));
             autoShiftScopeLabel[0] = autoShiftScope;
             form.addView(autoShiftScope);
-
-            TextView rpmLabel = new TextView(this);
-            rpmLabelRef[0] = rpmLabel;
-            rpmLabel.setText("Auto Shift target: " + settings.autoShiftRpm + " RPM");
-            rpmLabel.setPadding(0, dp(4), 0, 0);
-            form.addView(rpmLabel);
-
-            android.widget.SeekBar rpm = new android.widget.SeekBar(this);
-            rpmSeekBarRef[0] = rpm;
-            rpm.setMax(ModMenuConfig.MAX_SHIFT_RPM - ModMenuConfig.MIN_SHIFT_RPM);
-            rpm.setProgress(settings.autoShiftRpm - ModMenuConfig.MIN_SHIFT_RPM);
-            rpm.setEnabled(settings.autoPerfectShift);
-            rpm.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener() {
-                @Override public void onProgressChanged(android.widget.SeekBar bar, int progress, boolean fromUser) {
-                    rpmLabel.setText("Auto Shift target: "
-                            + (ModMenuConfig.MIN_SHIFT_RPM + progress) + " RPM");
-                }
-                @Override public void onStartTrackingTouch(android.widget.SeekBar bar) {}
-                @Override public void onStopTrackingTouch(android.widget.SeekBar bar) {}
-            });
-            autoShift.setOnCheckedChangeListener((button, checked) -> {
-                rpm.setEnabled(checked);
-                if (checked && !master.isChecked()) master.setChecked(true);
-            });
-            form.addView(rpm);
 
             CheckBox infiniteNos = new CheckBox(this);
             infiniteNos.setText("Infinite NOS — hook pending");
@@ -1051,7 +874,7 @@ public final class GameActivity extends NativeActivity {
             form.addView(filePath);
 
             TextView safety = new TextView(this);
-            safety.setText("Auto Shift sends the mapped Shift Up key only when the armed event, gear, RPM target and throttle checks match. Other cheats are not implemented. Settings are separate from Career data; no game memory values are overwritten.");
+            safety.setText("Auto Shift reads the active car's own engine RPM range and calculates its shift point automatically (about 90% of that range). It works across vehicle changes without per-car calibration. It only sends Shift-Up in the armed Drag event and does not modify Career data.");
             safety.setTextSize(12);
             safety.setPadding(0, dp(8), 0, 0);
             form.addView(safety);
@@ -1111,143 +934,13 @@ public final class GameActivity extends NativeActivity {
                     .setTitle("NFSU2 Revived — Mod Menu")
                     .setView(root)
                     .create();
-            calibrationButton.setOnClickListener(button -> {
-                final float[][] calibrationSnapshot = {null};
-                if (calibrationRunning[0]) {
-                    stopCalibration.run();
-                    return;
-                }
-                try {
-                    if (!io.mininxd.nfsu2.net.RoamNativeBridge.isLoaded()) {
-                        calibrationText.setText("Telemetry bridge unavailable. Calibration was not started.");
-                        Toast.makeText(this, "Telemetry bridge unavailable.", Toast.LENGTH_LONG).show();
-                        return;
-                    }
-                    float[] initial = io.mininxd.nfsu2.net.RoamNativeBridge.nativeGetGameTelemetry();
-                    calibrationSnapshot[0] = initial;
-                    if (initial == null || initial.length < 13) {
-                        String reason = "Telemetry bridge is outdated. Reinstall the latest Mod Edition build.";
-                        calibrationText.setText(reason);
-                        Toast.makeText(this, reason, Toast.LENGTH_LONG).show();
-                        return;
-                    }
-                    if (initial[0] < 0.5f) {
-                        String reason = String.format(java.util.Locale.US,
-                                "No car snapshot | Flow %d | Player* %s | Car* %s",
-                                Math.round(initial[1]), initial[6] > 0.5f ? "OK" : "missing",
-                                initial[7] > 0.5f ? "OK" : "missing");
-                        calibrationText.setText(reason);
-                        Toast.makeText(this, reason, Toast.LENGTH_LONG).show();
-                        return;
-                    }
-                    if (initial[12] < 0.5f) {
-                        String reason = String.format(java.util.Locale.US,
-                                "Car found, but race is not active | Flow %d | Race state %d | Type %d | Track %d. Start the Drag event and wait until driving begins.",
-                                Math.round(initial[1]), Math.round(initial[8]),
-                                Math.round(initial[9]), Math.round(initial[10]));
-                        calibrationText.setText(reason);
-                        Toast.makeText(this, reason, Toast.LENGTH_LONG).show();
-                        return;
-                    }
-                } catch (Throwable error) {
-                    String reason = "Could not read telemetry: " + error.getClass().getSimpleName();
-                    calibrationText.setText(reason);
-                    Toast.makeText(this, reason, Toast.LENGTH_LONG).show();
-                    return;
-                }
-                float[] initial = calibrationSnapshot[0];
-                // Persist the visible Mod Menu switches before leaving the dialog.
-                // Previously, starting calibration without first pressing Save left the
-                // on-screen checked switches unsaved; stopping calibration then reloaded
-                // the old OFF config and Auto Shift appeared to disable itself.
-                settings.master = master.isChecked() || autoShift.isChecked();
-                settings.autoPerfectShift = autoShift.isChecked();
-                settings.autoShiftRpm = ModMenuConfig.MIN_SHIFT_RPM + rpm.getProgress();
-                settings.infiniteNos = infiniteNos.isChecked();
-                settings.raceAssist = raceAssist.isChecked();
-                settings.perfectDrift = perfectDrift.isChecked();
-                if (!settings.autoPerfectShift) {
-                    settings.autoShiftTrackId = -1;
-                    settings.autoShiftRaceType = -1;
-                } else if (initial[0] > 0.5f && Math.round(initial[1]) == 6
-                        && Math.round(initial[8]) == 4 && initial[12] > 0.5f) {
-                    settings.autoShiftTrackId = Math.round(initial[10]);
-                    settings.autoShiftRaceType = Math.round(initial[9]);
-                    activeEventAtOpen[0] = true;
-                    eventTrackAtOpen[0] = settings.autoShiftTrackId;
-                    eventTypeAtOpen[0] = settings.autoShiftRaceType;
-                }
-                if (!ModMenuConfig.save(this, settings)) {
-                    String reason = "Could not save Mod Menu settings. Calibration was not started; existing settings were left unchanged.";
-                    calibrationText.setText(reason);
-                    Toast.makeText(this, reason, Toast.LENGTH_LONG).show();
-                    return;
-                }
-                observedShiftPeaks.clear();
-                previousGear[0] = -1;
-                peakRpm[0] = 0f;
-                calibrationRunning[0] = true;
-                modCalibrationRunning = true;
-                calibrationText.setText("Shift calibration running. Stop here or tap MOD to stop.");
-                TextView overlayText = new TextView(this);
-                overlayText.setText("Starting shift calibration...");
-                overlayText.setTextColor(Color.WHITE);
-                overlayText.setTextSize(12);
-                overlayText.setPadding(dp(12), dp(8), dp(12), dp(8));
-                calibrationOverlayText[0] = overlayText;
-
-                android.widget.Button stopButton = new android.widget.Button(this);
-                stopButton.setText("Stop");
-                stopButton.setAllCaps(false);
-                stopButton.setMinWidth(dp(88));
-                stopButton.setMinHeight(dp(48));
-                stopButton.setFocusable(false);
-                stopButton.setFocusableInTouchMode(false);
-                stopButton.setClickable(true);
-                stopButton.setOnClickListener(stop -> stopCalibration.run());
-
-                LinearLayout overlay = new LinearLayout(this);
-                overlay.setOrientation(LinearLayout.HORIZONTAL);
-                overlay.setGravity(Gravity.CENTER_VERTICAL);
-                // This HUD must be transparent to gameplay input outside the Stop button.
-                // A focusable PopupWindow steals window focus; GameActivity then dismisses
-                // its touch-control window in onWindowFocusChanged(false).
-                overlay.setFocusable(false);
-                overlay.setFocusableInTouchMode(false);
-                overlay.setClickable(false);
-                overlay.setPadding(dp(6), dp(4), dp(6), dp(4));
-                overlay.setBackgroundColor(0xE6222222);
-                overlay.addView(overlayText, new LinearLayout.LayoutParams(0,
-                        ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-                overlay.addView(stopButton, new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-                int maxWidth = getResources().getDisplayMetrics().widthPixels - dp(24);
-                calibrationPopup[0] = new PopupWindow(overlay, Math.min(maxWidth, dp(560)),
-                        ViewGroup.LayoutParams.WRAP_CONTENT, false);
-                calibrationPopup[0].setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(0xE6222222));
-                calibrationPopup[0].setOutsideTouchable(false);
-                calibrationPopup[0].setFocusable(false);
-                calibrationPopup[0].setTouchable(true);
-                calibrationPopup[0].setInputMethodMode(PopupWindow.INPUT_METHOD_NOT_NEEDED);
-                calibrationPopup[0].setElevation(dp(8));
-                if (Build.VERSION.SDK_INT >= 29) calibrationPopup[0].setTouchModal(false);
-                modCalibrationWindow = calibrationPopup[0];
-                dialog.dismiss();
-                calibrationPopup[0].showAtLocation(getWindow().getDecorView(),
-                        Gravity.TOP | Gravity.CENTER_HORIZONTAL, 0, dp(18));
-                calibrationHandler.post(calibrationPoll[0]);
-            });
             dialog.setOnDismissListener(ignored -> {
-                if (!calibrationRunning[0]) calibrationHandler.removeCallbacks(calibrationPoll[0]);
                 // Resume only if this dialog actually paused an active driving session.
                 if (modMenuPausedGameplay) {
                     modMenuPausedGameplay = false;
                     pulseGamePauseKey();
                 }
-                if (!modCalibrationRunning) {
-                    new Handler(Looper.getMainLooper()).postDelayed(this::startAutoShiftController, 240L);
-                }
+                new Handler(Looper.getMainLooper()).postDelayed(this::startAutoShiftController, 240L);
             });
             allOffButton.setOnClickListener(button -> {
                 ModMenuConfig.Settings disabled = new ModMenuConfig.Settings();
@@ -1262,7 +955,6 @@ public final class GameActivity extends NativeActivity {
             saveButton.setOnClickListener(button -> {
                 settings.master = master.isChecked();
                 settings.autoPerfectShift = autoShift.isChecked();
-                settings.autoShiftRpm = ModMenuConfig.MIN_SHIFT_RPM + rpm.getProgress();
                 if (settings.autoPerfectShift && !settings.master) {
                     // Auto Shift requires Master; persist both switches consistently.
                     settings.master = true;
@@ -1289,8 +981,7 @@ public final class GameActivity extends NativeActivity {
                     if (!settings.autoPerfectShift) {
                         savedMessage = "Mod Menu settings saved. Gameplay cheats remain off.";
                     } else if (autoShiftArmed && activeEventAtOpen[0]) {
-                        savedMessage = "Settings saved. Experimental Auto Shift armed for this event at "
-                                + settings.autoShiftRpm + " RPM.";
+                        savedMessage = "Settings saved. Auto Shift armed for this event; shift RPM adapts automatically to every car.";
                     } else if (autoShiftArmed) {
                         savedMessage = "Settings saved. Auto Shift preference remains ON and scoped to its saved event.";
                     } else {
@@ -1377,10 +1068,8 @@ public final class GameActivity extends NativeActivity {
             setTiltKeys(false,false);
             // A calibration overlay is intentionally non-focusable and must never
             // tear down the gameplay touch-control layer while RPM samples are running.
-            if(!modCalibrationRunning) {
-                if(controlsWindow!=null)controlsWindow.dismiss();
-                if(diagnosticOverlay!=null)diagnosticOverlay.hide();
-            }
+            if(controlsWindow!=null)controlsWindow.dismiss();
+            if(diagnosticOverlay!=null)diagnosticOverlay.hide();
         }
         if(focused){
             if(Build.VERSION.SDK_INT>=30){
