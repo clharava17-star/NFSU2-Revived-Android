@@ -42,7 +42,14 @@ public final class RoamNativeBridge {
     public static native void nativeRoamHorn(boolean held);
     public static native void nativeSetFrameLimit(int fps);
     public static native int[] nativeGetActionKeys();
-    /** Read-only snapshot: [valid, gameState, speedMps, rpm, throttle, gearRaw]. */
+    /**
+     * Read-only 13-field snapshot:
+     * [valid, gameFlow, speedMps, rpm, throttle, signedGear,
+     *  playerPointerValid, carPointerValid, raceState, raceType,
+     *  trackId, careerRaceActive, activeWorldRace].
+     * signedGear: -1 reverse, 0 neutral, 1 first gear, etc.
+     */
+
     public static native float[] nativeGetGameTelemetry();
 
     /**
