@@ -39,10 +39,6 @@
 #ifdef __ANDROID__
 #include <aaudio/AAudio.h>
 #endif
-#ifdef __ANDROID__
-extern "C" void nfs_roam_bind_guest_memory(ptrdiff_t* mem_base, uint32_t* esp);
-extern "C" void nfs_roam_frame_tick(void);
-#endif
 extern "C" {
 #include "recomp_types.h"
 #include "pe_format.h"
@@ -361,13 +357,13 @@ void d3dDispatch(){
         }
         nfs_adpf_end_frame();
         nfs_widescreen_apply_frame_rate();
-        // libnfsu2_roam is a direct DT_NEEDED dependency of this library.
-        // Call the companion from the same linker namespace; do not rely on
-        // class-loader dlopen visibility from NativeActivity.
-#ifdef __ANDROID__
-        nfs_roam_bind_guest_memory(&g_mem_base, &g_esp);
-        nfs_roam_frame_tick();
-#endif
+        static void (*s_roam_tick)()=nullptr;
+        if(!s_roam_tick){
+            void* h=dlopen("libnfsu2_roam.so",RTLD_NOW|RTLD_GLOBAL);
+            if(h)s_roam_tick=reinterpret_cast<void(*)()>(dlsym(h,"nfs_roam_frame_tick"));
+            if(!s_roam_tick)s_roam_tick=reinterpret_cast<void(*)()>(dlsym(RTLD_DEFAULT,"nfs_roam_frame_tick"));
+        }
+        if(s_roam_tick)s_roam_tick();
         serviceGuestSound();
         lastPresentMs=steadyMs();
         startStallWatch();
