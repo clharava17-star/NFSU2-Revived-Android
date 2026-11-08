@@ -184,9 +184,11 @@ static _Atomic int g_mod_stack_ready = 0;
  * then PhysicsMover+0x4C. It provides shiftUp[9] at +0x84, last shift result at +0x68,
  * rpmAtShift at +0x6C, perfectRangeMul at +0xE4, and perfType at +0xF0.
  * PerfectShiftMaxRPMDiff is the game's 3x9 table at guest VA 0x007FBF60.
- * RateShift returns Perfect (1.0) when RPM is just above shiftUp[gear]
- * by less than 5% of R, where R = table[perfType*9+gear] * perfectRangeMul.
- * The exact perfect window is (shiftUp, shiftUp + 0.05*R). No game memory is written.
+ * ShiftMatch (original 0x594F20) computes R = table[perfType*9+gear] * perfectRangeMul.
+ * It returns maximum match (1.0) only for RPM strictly above shiftUp[gear] and
+ * below shiftUp[gear] + (1.0 - gearboxMatchWindow) * R. The returned field [28]
+ * is this exact per-gear upper-window delta, not a guessed percentage of R.
+ * gearboxMatchWindow is read live from guest VA 0x007FBF5C. No game memory is written.
  * Gear and throttle use the player snapshot fields documented in local_state().
  */
 
@@ -331,8 +333,16 @@ static void mod_telemetry_update(void) {
                         && max_diff_index >= 0 && max_diff_index < 27
                         && rh_mem_committed(0x007FBF60u + 4u * (uint32_t)max_diff_index, 4)) {
                     const float max_rpm_diff = MRF32(0x007FBF60u + 4u * (uint32_t)max_diff_index);
-                    const float perfect_range = max_rpm_diff * perfect_range_mul;
+                    const float gearbox_match_window = rh_mem_committed(0x007FBF5Cu, 4)
+                            ? MRF32(0x007FBF5Cu) : -1.0f;
+                    const float raw_match_window_rpm = max_rpm_diff * perfect_range_mul;
+                    /* Exact maximum-match band from ShiftMatch (0x594F20):
+                       shiftUp < RPM < shiftUp + (1 - gearboxMatchWindow) * rawWindow. */
+                    const float perfect_range = (1.0f - gearbox_match_window) * raw_match_window_rpm;
                     if (isfinite(max_rpm_diff) && max_rpm_diff > 0.0f
+                            && isfinite(gearbox_match_window) && gearbox_match_window > 0.0f
+                            && gearbox_match_window < 1.0f
+                            && isfinite(raw_match_window_rpm) && raw_match_window_rpm > 0.0f
                             && isfinite(perfect_range) && perfect_range > 0.0f && perfect_range <= 5000.0f) {
                         next[27] = shift_up;
                         next[28] = perfect_range;
