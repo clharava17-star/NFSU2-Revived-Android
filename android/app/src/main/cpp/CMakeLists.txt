@@ -90,16 +90,6 @@ endif()
 add_library(nfsu2_diagnostics SHARED gpu_probe.cpp vulkan_driver.cpp)
 target_link_libraries(nfsu2_diagnostics PRIVATE android log dl)
 target_compile_options(nfsu2_diagnostics PRIVATE -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers)
-# The read-only telemetry/frame hook companion must be in the SAME linker namespace
-# as the guest runtime. A Java System.loadLibrary() load does not guarantee that
-# dlopen(RTLD_DEFAULT)/dlsym from NativeActivity can resolve the same symbols.
-set(NFSU2_ROAM_LIBRARY "${CMAKE_CURRENT_SOURCE_DIR}/../jniLibs/${ANDROID_ABI}/libnfsu2_roam.so")
-if(NOT EXISTS "${NFSU2_ROAM_LIBRARY}")
-    message(FATAL_ERROR "Missing native Mod Menu companion: ${NFSU2_ROAM_LIBRARY}")
-endif()
-add_library(nfsu2_roam SHARED IMPORTED GLOBAL)
-set_target_properties(nfsu2_roam PROPERTIES IMPORTED_LOCATION "${NFSU2_ROAM_LIBRARY}")
-
 add_library(nfsu2_android SHARED main.cpp guest_runtime.cpp d3d9_bridge.cpp vulkan_driver.cpp adpf_manager.cpp "${NFS_ROOT}/src/runtime/overrides.c" "${NFS_ROOT}/src/runtime/widescreen.c" $<TARGET_OBJECTS:nfs_guest>)
 target_include_directories(nfsu2_android SYSTEM PRIVATE "${DXVK_SOURCE}/include/native"
   "${DXVK_SOURCE}/include/native/windows" "${DXVK_SOURCE}/include/native/directx")
@@ -120,7 +110,7 @@ target_compile_features(nfsu2_android PRIVATE cxx_std_17)
 target_compile_definitions(nfsu2_android PRIVATE VK_USE_PLATFORM_ANDROID_KHR)
 target_compile_options(nfsu2_android PRIVATE -O2 -fno-strict-aliasing -ffp-contract=off -Wall -Wextra -Werror -Wno-missing-field-initializers)
 target_link_options(nfsu2_android PRIVATE "-uANativeActivity_onCreate")
-target_link_libraries(nfsu2_android PRIVATE native_app_glue android log vulkan dxvk_android aaudio dl nfsu2_roam)
+target_link_libraries(nfsu2_android PRIVATE native_app_glue android log vulkan dxvk_android aaudio dl)
 if(NFS_GUEST_LTO)
     target_link_options(nfsu2_android PRIVATE -flto=thin "-Wl,--thinlto-jobs=4"
         "-Wl,--thinlto-cache-dir=${CMAKE_BINARY_DIR}/thinlto-cache")
