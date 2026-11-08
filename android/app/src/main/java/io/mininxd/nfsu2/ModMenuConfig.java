@@ -94,6 +94,8 @@ final class ModMenuConfig {
                 + "master=" + onOff(settings.master) + "\n"
                 + "auto_perfect_shift=" + onOff(settings.autoPerfectShift) + "\n"
                 + "auto_shift_rpm=" + Math.max(MIN_SHIFT_RPM, Math.min(MAX_SHIFT_RPM, settings.autoShiftRpm)) + "\n"
+                + "auto_shift_track_id=" + settings.autoShiftTrackId + "\n"
+                + "auto_shift_race_type=" + settings.autoShiftRaceType + "\n"
                 + "infinite_nos=" + onOff(settings.infiniteNos) + "\n"
                 + "race_assist=" + onOff(settings.raceAssist) + "\n"
                 + "perfect_drift=" + onOff(settings.perfectDrift) + "\n";
