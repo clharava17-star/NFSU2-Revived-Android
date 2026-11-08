@@ -1,3 +1,24 @@
+## Perfect Shift timing correction — use the active Drag physics threshold
+
+The user's supplied Drag video shows the game reporting **Short Shift!** after an automatic upshift. The previous build's 90% fraction of the base/vehicle RPM range was too early for this car's active setup. That 90% formula is superseded and is no longer used by the controller.
+
+The active physics block is reached through the game object graph:
+
+- Player Car + `0x10` → `RideInfo*`
+- `RideInfo + 0x10` → `RidePhysicsInfo*`
+- `RidePhysicsInfo + 0x30` → inline tuned `CarPhysicsInfo` (CPI)
+
+The NFSU2 physics reverse-engineering reference documents `RideInfo+0x10 = RidePhysicsInfo`, `GetCarPhysicsInfo() → RPI+0x30`, and rebuilds that block after installed performance parts, junkman, custom tuning and race-mode modifiers. The CPI fields used here are:
+- `CPI + 0x1F0`: active idle RPM
+- `CPI + 0x1F4`: active redline/shift RPM
+- `CPI + 0x1F8`: active maximum RPM
+
+The NFSU2 drag simulation model uses `CPI+0x1F4 - 100 RPM` as its gear shift threshold. The companion now reads this *live tuned CPI* value with guarded memory checks and publishes it as telemetry field [26]. It also reports active idle/max RPM in fields [24–25]. Auto Shift now predicts the next 16 ms sample and sends Shift-Up as the live RPM approaches/crosses this per-car threshold. It resets its pending state when the car type changes and fails closed when the active CPI cannot be read safely.
+
+This is a materially better shift target than a generic 90% of base engine range and should reduce premature Short Shift results. It is still not proof that the game's brief green Perfect Shift window is exactly identical to this dyno-model threshold. The next device test must check the game's own result text/color (Short / Good / Perfect / OverRev) across several cars and installed setups. Do not claim guaranteed Perfect Shift until those tests pass.
+
+---
+
 # Universal vehicle-adaptive Auto Shift — current implementation
 
 This section supersedes the older calibration/RPM-slider notes below. Auto Shift no longer requires manual calibration for each vehicle and no longer stores one fixed RPM target in the Mod Menu.
@@ -22,7 +43,7 @@ The Java controller derives the target from the currently sampled vehicle on eve
 
 `targetRPM = idleRPM + (maxRPM - idleRPM) * 0.90`
 
-The 90% range fraction is the current experimental starting point, not a verified green Perfect Shift window. It adjusts naturally when the player switches to a different car type. When the car type changes, the controller resets its pending gear confirmation, RPM slope sample, and cooldown baseline so it does not carry one vehicle's engine range into another.
+The earlier 90% engine-range fraction was too early in the user's video and has been superseded by the live tuned Drag CPI threshold described at the top of this file.
 
 The existing one-sample RPM-rise prediction, throttle validation, forward-gear validation, exact armed-event check, Shift-Up key pulse, gear-change confirmation, and fail-closed behavior remain in place. If the current car's engine range cannot be read safely, Auto Shift does not issue a shift input.
 
@@ -42,7 +63,7 @@ The new build must be tested on-device with at least two different player cars:
 4. Change to a different car without editing any RPM setting. Confirm the reported car type / RPM range / target changes automatically and Auto Shift continues to request shifts.
 5. Confirm the setting remains enabled and no shift input is sent when throttle is released, engine telemetry is invalid, or the active event does not match.
 
-A successful APK build proves compilation and packaging only. It does not prove the 90% threshold is optimal for every vehicle or that the game's green Perfect Shift judgement has been reverse-engineered.
+A successful APK build proves compilation and packaging only. The active CPI threshold is a better Drag shift reference, but the game's green Perfect Shift judgement must still be verified by its on-screen result.
 
 ---
 
@@ -174,13 +195,13 @@ Reference reverse-engineering notes for the same 4,800,512-byte v1.2 US executab
 - [FRSModLoader Vehicle.h](https://github.com/chrystianfarias/FRSModLoader/blob/main/src/game/Vehicle.h)
 - [FRSModLoader NOTES.md — telemetry and shift notes](https://github.com/chrystianfarias/FRSModLoader/blob/main/NOTES.md)
 
-The drag shift judgement itself is not yet mapped in this Android build. The current vehicle-adaptive target uses the active car type's engine range; it does not yet read installed-part torque curves or prove the game's green Perfect Shift judgement. The 90% engine-range fraction remains experimental and requires validation across multiple cars. See [NFSU2 Drag shift overview](https://nfs.fandom.com/wiki/Need_for_Speed%3A_Underground_2/Drag) and [Prima guide excerpt](https://www.scribd.com/document/343113449/Need-for-Speed-Underground-2-Prima-Official-Guide).
+The drag shift judgement itself is not yet fully mapped in this Android build. The current controller reads the active tuned CarPhysicsInfo redline threshold (CPI+0x1F4-100), including installed performance and race-mode physics, rather than using the old 90% CarTypeInfo approximation. This improves the shift target but still requires in-game result validation. See [NFSU2 Drag shift overview](https://nfs.fandom.com/wiki/Need_for_Speed%3A_Underground_2/Drag) and [Prima guide excerpt](https://www.scribd.com/document/343113449/Need-for-Speed-Underground-2-Prima-Official-Guide).
 
 ## Universal Auto Shift controller (event-scoped)
 
-The Android controller uses the mapped Shift Up scan code and read-only telemetry. It is armed for a saved event type/track, but it is not tied to a vehicle name or vehicle-specific RPM setting. The active vehicle's engine range is read dynamically from CarTypeInfo and the target is recalculated whenever the vehicle type changes. The controller requires the same active event, a readable vehicle engine range, a valid forward gear, positive RPM, and real throttle input. It emits a short Shift-Up pulse only at the dynamic shift point, then waits for a confirmed gear increase or timeout and RPM-drop hysteresis before another pulse. It stops on pause/background, menu open, or Activity destruction.
+The Android controller uses the mapped Shift Up scan code and read-only telemetry. It is armed for a saved event type/track, but it is not tied to a vehicle name or vehicle-specific RPM setting. The active vehicle's tuned Drag physics block is read dynamically and the target is recalculated when the physics/car changes. The controller requires the same active event, a readable tuned CPI threshold, a valid forward gear, positive RPM, and real throttle input. It emits a short Shift-Up pulse only at the dynamic shift point, then waits for a confirmed gear increase or timeout and RPM-drop hysteresis before another pulse. It stops on pause/background, menu open, or Activity destruction.
 
-This is an RPM-triggered upshift using the active car's own maximum RPM range. It is not a verified NFSU2 Perfect Shift implementation. The exact green shift window, installed-part torque effects, and best target fraction still require on-device validation. Infinite NOS, Race Assist, and Perfect Drift remain out of scope.
+This is an RPM-triggered upshift using the active car's tuned Drag redline threshold. It is not yet a verified NFSU2 Perfect Shift implementation. The exact green judgement window and timing still require on-device validation. Infinite NOS, Race Assist, and Perfect Drift remain out of scope.
 
 ## Historical calibration HUD issue (superseded)
 
@@ -220,7 +241,7 @@ Implemented as read-only diagnostic groundwork:
 - The raw gear counter is interpreted as 0 reverse, 1 neutral, 2 first gear, and so on.
 
 Not implemented:
-- The experimental Auto Shift controller can send the mapped Shift Up key in its specifically armed event when configured RPM/throttle/gear conditions match. This is an RPM-triggered prototype, not a confirmed Perfect Shift implementation.
+- The experimental Auto Shift controller can send the mapped Shift Up key in its specifically armed event when live tuned Drag threshold/throttle/gear conditions match. This is an RPM-triggered prototype, not a confirmed Perfect Shift implementation.
 - Exact NFSU2 Drag event identifier and green Perfect Shift timing window still require on-device validation. Do not claim it is “always Perfect”.
 - Infinite NOS has no verified race NOS hook.
 - Race Assist has no verified opponent or race-result hook.
@@ -245,7 +266,7 @@ These findings are from symbol metadata and strings only. They do not establish 
 
 ### Consequence for NFSU2
 
-The reference suggests a better long-term shape for Auto Shift: evaluate a validated shift condition from the game execution/frame context, then submit a shift-up input through the port's existing input path. NFSU2's current build is an x86 guest executable running inside the Android recompiler; its own guest addresses and state must be mapped independently. The current Java controller remains an explicitly experimental RPM-triggered prototype until its timing is verified in the actual Drag event. The reference APK does not prove that the NFSU2 green Perfect Shift window is mapped.
+The reference suggests a better long-term shape for Auto Shift: evaluate a validated shift condition from the game execution/frame context, then submit a shift-up input through the port's existing input path. NFSU2's current build is an x86 guest executable running inside the Android recompiler; its own guest addresses and state must be mapped independently. The current Java controller remains an experimental RPM-triggered implementation using the active tuned CPI shift threshold until its timing is verified in the actual Drag event. The reference APK does not prove that the NFSU2 green Perfect Shift window is mapped.
 
 The reference's pause symbols are not needed for the already-working NFSU2 MOD pause/resume path. Keep the existing guest pause/input path unchanged.
 
