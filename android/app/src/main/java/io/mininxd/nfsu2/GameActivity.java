@@ -211,6 +211,9 @@ public final class GameActivity extends NativeActivity {
         final long[] pendingSince = {0L};
         final long[] lastShiftAt = {0L};
         final boolean[] waitForRpmDrop = {false};
+        final int[] observedGear = {-1};
+        final float[] previousRpm = {-1.0f};
+        final long[] previousRpmAt = {0L};
         final Runnable[] loop = new Runnable[1];
 
         loop[0] = () -> {
@@ -232,19 +235,47 @@ public final class GameActivity extends NativeActivity {
                 if (!matchingEvent) {
                     pendingGear[0] = -1;
                     waitForRpmDrop[0] = false;
+                    observedGear[0] = -1;
+                    previousRpm[0] = -1.0f;
+                    previousRpmAt[0] = 0L;
                 } else {
                     int gear = Math.round(sample[5]);
                     float rpm = sample[3];
-                    float speed = sample[2];
                     float throttle = sample[4];
-                    boolean accelerating = throttle >= 0.0f ? throttle > 0.20f : speed > 1.0f;
                     long now = android.os.SystemClock.elapsedRealtime();
+
+                    // Require a real throttle reading. A missing controller value must
+                    // never be interpreted as acceleration merely because the car moves.
+                    boolean accelerating = throttle >= 0.25f && throttle <= 1.5f
+                            && rpm > 0.0f && gear >= 1 && gear < 6;
+
+                    float rpmRisePerMs = 0.0f;
+                    if (observedGear[0] != gear) {
+                        observedGear[0] = gear;
+                        previousRpm[0] = rpm;
+                        previousRpmAt[0] = now;
+                    } else if (previousRpm[0] > 0.0f) {
+                        long sampleDeltaMs = now - previousRpmAt[0];
+                        if (sampleDeltaMs >= 8L && sampleDeltaMs <= 250L) {
+                            rpmRisePerMs = (rpm - previousRpm[0]) / (float) sampleDeltaMs;
+                        }
+                        previousRpm[0] = rpm;
+                        previousRpmAt[0] = now;
+                    } else {
+                        previousRpm[0] = rpm;
+                        previousRpmAt[0] = now;
+                    }
+
+                    // Predict only one polling interval ahead. This compensates for
+                    // the 16 ms sampling cadence without guessing a long input latency.
+                    float predictedRpm = rpm + Math.max(0.0f, rpmRisePerMs) * 16.0f;
+                    predictedRpm = Math.min(predictedRpm, rpm + 500.0f);
 
                     if (pendingGear[0] >= 1 && gear > pendingGear[0]) {
                         pendingGear[0] = -1;
                         waitForRpmDrop[0] = true;
                     } else if (pendingGear[0] >= 1 && now - pendingSince[0] > 1200L) {
-                        // Do not spam Shift if the game did not accept the previous input.
+                        // The game did not accept the input: do not spam Shift-Up.
                         pendingGear[0] = -1;
                         waitForRpmDrop[0] = true;
                     }
@@ -253,10 +284,11 @@ public final class GameActivity extends NativeActivity {
                         waitForRpmDrop[0] = false;
                     }
 
+                    boolean shiftPointReached = rpm >= targetRpm
+                            || (rpm >= targetRpm * 0.90f && predictedRpm >= targetRpm);
                     if (pendingGear[0] < 0 && !waitForRpmDrop[0]
-                            && gear >= 1 && gear <= 6
-                            && accelerating && rpm >= targetRpm
-                            && now - lastShiftAt[0] >= 600L) {
+                            && accelerating && shiftPointReached
+                            && now - lastShiftAt[0] >= 450L) {
                         pendingGear[0] = gear;
                         pendingSince[0] = now;
                         lastShiftAt[0] = now;
@@ -870,11 +902,15 @@ public final class GameActivity extends NativeActivity {
                     } else {
                         int gear = Math.round(sample[5]);
                         float currentRpm = sample[3];
-                        if (previousGear[0] < 0 || gear <= 1) {
+                        if (previousGear[0] < 0) {
+                            previousGear[0] = gear;
+                            peakRpm[0] = currentRpm;
+                        } else if (gear <= 0) {
+                            // Reverse/neutral is not a shift sample; start a fresh baseline.
                             previousGear[0] = gear;
                             peakRpm[0] = currentRpm;
                         } else if (gear > previousGear[0]) {
-                            if (peakRpm[0] >= 500f) {
+                            if (previousGear[0] >= 1 && peakRpm[0] >= 500f) {
                                 observedShiftPeaks.add(Math.round(peakRpm[0]));
                                 while (observedShiftPeaks.size() > 8) observedShiftPeaks.remove(0);
                             }
@@ -884,6 +920,7 @@ public final class GameActivity extends NativeActivity {
                             previousGear[0] = gear;
                             peakRpm[0] = currentRpm;
                         } else {
+                            // Keep the highest RPM observed while this gear is engaged.
                             peakRpm[0] = Math.max(peakRpm[0], currentRpm);
                         }
                         if (observedShiftPeaks.isEmpty()) {
@@ -909,7 +946,7 @@ public final class GameActivity extends NativeActivity {
                 } catch (Throwable error) {
                     calibrationText.setText("Calibration read failed: " + error.getClass().getSimpleName());
                 }
-                if (calibrationRunning[0]) calibrationHandler.postDelayed(calibrationPoll[0], 50);
+                if (calibrationRunning[0]) calibrationHandler.postDelayed(calibrationPoll[0], 20);
             };
             modCalibrationPoll = calibrationPoll[0];
 
