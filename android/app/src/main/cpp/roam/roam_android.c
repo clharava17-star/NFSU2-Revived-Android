@@ -110,32 +110,41 @@ static inline void roam_android_patch_carpool(void) {
     }
 }
 
-static int roam_android_resolve_symbols(void) {
-    void *h = NULL;
-    if (!g_p_mem_base || !g_p_esp) {
-        h = dlopen("libnfsu2_android.so", RTLD_NOLOAD | RTLD_GLOBAL);
-        if (!h) h = dlopen("libnfsu2_android.so", RTLD_LAZY | RTLD_GLOBAL);
-        if (!h) h = RTLD_DEFAULT;
-        if (!g_p_mem_base) g_p_mem_base = (ptrdiff_t *)dlsym(h, "g_mem_base");
-        if (!g_p_esp) g_p_esp = (uint32_t *)dlsym(h, "g_esp");
-    }
+/*
+ * Resolve against the already-loaded game runtime only.
+ *
+ * Never fall back to RTLD_LAZY here: in some Android linker namespaces that
+ * can load a second copy of libnfsu2_android.so. Its g_mem_base is unrelated
+ * to the running game and remains zero forever.
+ */
+static void *g_game_runtime_handle = NULL;
 
-    /* Runtime registers are only required by lifted free-roam calls, not by
-     * read-only telemetry. Resolve them once; the readable-memory fallback
-     * below remains available when guest_is_readable is not exported. */
-    static int runtime_registers_resolved = 0;
-    if (!runtime_registers_resolved) {
-        if (!h) {
-            h = dlopen("libnfsu2_android.so", RTLD_NOLOAD | RTLD_GLOBAL);
-            if (!h) h = dlopen("libnfsu2_android.so", RTLD_LAZY | RTLD_GLOBAL);
-            if (!h) h = RTLD_DEFAULT;
-        }
-        if (!g_p_recomp_lookup) g_p_recomp_lookup = (recomp_func_t (*)(uint32_t))dlsym(h, "recomp_lookup");
-        if (!g_p_eax) g_p_eax = (uint32_t *)dlsym(h, "g_eax");
-        if (!g_p_ecx) g_p_ecx = (uint32_t *)dlsym(h, "g_ecx");
-        if (!g_p_edx) g_p_edx = (uint32_t *)dlsym(h, "g_edx");
-        if (!g_p_guest_is_readable) g_p_guest_is_readable = (int (*)(uint32_t, uint32_t))dlsym(h, "guest_is_readable");
-        runtime_registers_resolved = g_p_recomp_lookup && g_p_eax && g_p_ecx && g_p_edx;
+static void *roam_android_game_symbol(const char *name) {
+    void *symbol = dlsym(RTLD_DEFAULT, name);
+    if (symbol) return symbol;
+
+    if (!g_game_runtime_handle) {
+        g_game_runtime_handle = dlopen("libnfsu2_android.so", RTLD_NOW | RTLD_NOLOAD);
+    }
+    if (g_game_runtime_handle) return dlsym(g_game_runtime_handle, name);
+    return NULL;
+}
+
+static int roam_android_resolve_symbols(void) {
+    if (!g_p_mem_base) {
+        g_p_mem_base = (ptrdiff_t *)roam_android_game_symbol("g_mem_base");
+    }
+    if (!g_p_esp) {
+        g_p_esp = (uint32_t *)roam_android_game_symbol("g_esp");
+    }
+    if (!g_p_recomp_lookup) {
+        g_p_recomp_lookup = (recomp_func_t (*)(uint32_t))roam_android_game_symbol("recomp_lookup");
+    }
+    if (!g_p_eax) g_p_eax = (uint32_t *)roam_android_game_symbol("g_eax");
+    if (!g_p_ecx) g_p_ecx = (uint32_t *)roam_android_game_symbol("g_ecx");
+    if (!g_p_edx) g_p_edx = (uint32_t *)roam_android_game_symbol("g_edx");
+    if (!g_p_guest_is_readable) {
+        g_p_guest_is_readable = (int (*)(uint32_t, uint32_t))roam_android_game_symbol("guest_is_readable");
     }
     return g_p_mem_base != NULL && *g_p_mem_base != 0;
 }
@@ -162,7 +171,7 @@ int roam_android_init_symbols(void) {
  * walks pointers while the guest simulation is updating them.
  */
 static pthread_mutex_t g_mod_telemetry_mu = PTHREAD_MUTEX_INITIALIZER;
-static jfloat g_mod_telemetry[20] = {0, 0, 0, 0, -1, -99, 0, 0, -1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+static jfloat g_mod_telemetry[23] = {0, 0, 0, 0, -1, -99, 0, 0, -1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 static _Atomic uint32_t g_mod_frame_ticks = 0;
 static _Atomic uint32_t g_mod_snapshot_updates = 0;
 static _Atomic int g_mod_memory_ready = 0;
@@ -173,24 +182,28 @@ static _Atomic int g_mod_stack_ready = 0;
  * [6] Player* readable, [7] Car* readable, [8] race coordinator state,
  * [9] race type, [10] track ID, [11] career race active, [12] in-world race (flow=6 and race state=4),
  * [13] frame-hook count, [14] telemetry-update count, [15] guest memory ready, [16] guest ESP ready,
- * [17] flow address readable, [18] player-slot address readable, [19] race address readable.
+ * [17] flow address readable, [18] player-slot address readable, [19] race address readable,
+ * [20] g_mem_base symbol found, [21] game memory image mapped, [22] g_esp symbol found.
  *
  * Game addresses and car field offsets match the v1.2 NA port definitions in roam_game.c.
  * Gear and throttle deliberately use the same fields as local_state() in roam_game.c.
  */
 
-static void mod_telemetry_publish(const jfloat values[20]) {
+static void mod_telemetry_publish(const jfloat values[23]) {
     pthread_mutex_lock(&g_mod_telemetry_mu);
     memcpy(g_mod_telemetry, values, sizeof(g_mod_telemetry));
     pthread_mutex_unlock(&g_mod_telemetry_mu);
 }
 
 static void mod_telemetry_update(void) {
-    jfloat next[20] = {0, 0, 0, 0, -1.0f, -99.0f, 0, 0, -1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    jfloat next[23] = {0, 0, 0, 0, -1.0f, -99.0f, 0, 0, -1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
     next[13] = (jfloat)atomic_load(&g_mod_frame_ticks);
     next[14] = (jfloat)(atomic_fetch_add(&g_mod_snapshot_updates, 1) + 1);
     next[15] = atomic_load(&g_mod_memory_ready) ? 1.0f : 0.0f;
     next[16] = atomic_load(&g_mod_stack_ready) ? 1.0f : 0.0f;
+    next[20] = g_p_mem_base ? 1.0f : 0.0f;
+    next[21] = (g_p_mem_base && *g_p_mem_base) ? 1.0f : 0.0f;
+    next[22] = g_p_esp ? 1.0f : 0.0f;
     const uint32_t flow_va = 0x008654A4u;       /* G_FLOW: 3 front end, 6 in world */
     const uint32_t player_va = 0x008900ACu;     /* SPLIT_PLAYERS_INDEX: Player* */
     const uint32_t race_va = 0x00890118u;       /* G_RACE: +0 state, 4 while racing */
@@ -279,13 +292,13 @@ static void mod_telemetry_refresh(void) {
 }
 
 static jfloatArray mod_telemetry_array(JNIEnv *env) {
-    jfloat snapshot[20];
+    jfloat snapshot[23];
     pthread_mutex_lock(&g_mod_telemetry_mu);
     memcpy(snapshot, g_mod_telemetry, sizeof(snapshot));
     pthread_mutex_unlock(&g_mod_telemetry_mu);
 
-    jfloatArray result = (*env)->NewFloatArray(env, 20);
-    if (result) (*env)->SetFloatArrayRegion(env, result, 0, 20, snapshot);
+    jfloatArray result = (*env)->NewFloatArray(env, 23);
+    if (result) (*env)->SetFloatArrayRegion(env, result, 0, 23, snapshot);
     return result;
 }
 
@@ -1205,7 +1218,7 @@ __attribute__((visibility("default"))) void nfs_roam_frame_tick(void) {
     if (!roam_android_memory_ready()) {
         atomic_store(&g_mod_memory_ready, 0);
         atomic_store(&g_mod_stack_ready, (g_p_esp && *g_p_esp) ? 1 : 0);
-        jfloat unavailable[20] = {0, 0, 0, 0, -1, -99, 0, 0, -1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+        jfloat unavailable[23] = {0, 0, 0, 0, -1, -99, 0, 0, -1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
         unavailable[13] = (jfloat)atomic_load(&g_mod_frame_ticks);
         unavailable[14] = (jfloat)atomic_load(&g_mod_snapshot_updates);
         unavailable[15] = 0.0f;
