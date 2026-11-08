@@ -70,6 +70,12 @@ Reference reverse-engineering notes for the same 4,800,512-byte v1.2 US executab
 
 The drag shift judgement itself is not yet mapped in this Android build. Public drag references describe a brief green "Perfect Shift" indicator and say the useful shift point varies by car and installed performance parts; therefore a fixed RPM threshold alone is not proof of a perfect shift. The target-RPM slider is only a calibration setting until the actual shift window / result field is identified and validated in-game. See [NFSU2 Drag shift overview](https://nfs.fandom.com/wiki/Need_for_Speed%3A_Underground_2/Drag) and [Prima guide excerpt](https://www.scribd.com/document/343113449/Need-for-Speed-Underground-2-Prima-Official-Guide).
 
+## User-reported telemetry and Stop-button issue
+
+The user's screenshot while the game displayed **Event Results** showed game-flow state `0`. This is not an active driving frame, so the telemetry reader correctly withholds RPM/gear instead of reporting stale values. Calibration now checks for a valid snapshot before starting and explains that the player must continue from the results screen, enter an actual Drag race, and drive before capturing samples.
+
+The user also reported that the calibration overlay's Stop button did not respond. The PopupWindow was originally created non-focusable. The updated implementation creates a touchable/focusable popup, gives Stop a minimum 88dp × 48dp hit target, and offers a second stop route: tapping the HUD **MOD** button while calibration is running calls the activity-owned stop routine. The Stop routine removes the polling callback and dismisses the popup.
+
 ## Current status — v0.2 prototype
 
 Implemented on `feature/mod-menu-v0.2`:
