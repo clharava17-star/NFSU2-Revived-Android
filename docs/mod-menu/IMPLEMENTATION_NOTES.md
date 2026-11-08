@@ -1,3 +1,9 @@
+## Calibration result reflected by the live test
+
+The 2026-11-08 device recording shows that the non-focusable calibration HUD leaves the game touch controls visible, throttle telemetry reaches 100%, and the player can make manual gear changes while sampling. The overlay reports two captured loaded-throttle upshifts with peaks around 7,945–7,969 RPM. After Stop, Master Cheat and Auto Shift remain checked.
+
+The recording also exposed a UI consistency issue: the learned RPM was written to modmenu.ini, but the already-open dialog still displayed the pre-calibration 7,000 RPM slider position. The stop action now updates both the existing dialog's slider/label and its in-memory Settings instance after a successful config write. This prevents a subsequent Save settings tap from replacing the learned RPM with the stale slider value.
+
 ## Calibration input pass-through and preserving Auto Shift settings
 
 The on-screen calibration HUD is now a non-focusable, non-modal PopupWindow. The previous focusable popup took window focus; GameActivity's focus-loss handler then dismissed the touch-control overlay and released all active controls. The Stop button remains touchable, while gameplay controls outside the narrow banner are allowed to reach the game. The focus-loss handler also avoids tearing down controls while calibration is active.
