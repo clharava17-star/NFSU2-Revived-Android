@@ -83,6 +83,12 @@ Reference reverse-engineering notes for the same 4,800,512-byte v1.2 US executab
 
 The drag shift judgement itself is not yet mapped in this Android build. Public drag references describe a brief green "Perfect Shift" indicator and say the useful shift point varies by car and installed performance parts; therefore a fixed RPM threshold alone is not proof of a perfect shift. The target-RPM slider is only a calibration setting until the actual shift window / result field is identified and validated in-game. See [NFSU2 Drag shift overview](https://nfs.fandom.com/wiki/Need_for_Speed%3A_Underground_2/Drag) and [Prima guide excerpt](https://www.scribd.com/document/343113449/Need-for-Speed-Underground-2-Prima-Official-Guide).
 
+## Experimental Auto Shift prototype (event-scoped)
+
+The Android controller currently uses the already-mapped Shift Up scan code and the read-only telemetry snapshot. The option can be armed only from an active in-world event: the menu captures the current race type and track ID before pausing; the values are persisted separately in `modmenu.ini`. When enabled with Master Cheat, the controller polls telemetry, requires the same flow/race state/type/track, a valid player-car snapshot, a forward gear (1–6), and throttle. It emits a short Shift Up key pulse when the configured RPM threshold is reached, enforces a 600 ms cooldown, and waits for a gear change or timeout plus RPM drop before another pulse. It stops on pause/background, menu open, or Activity destruction.
+
+This is an **experimental RPM-triggered upshift**, not a verified NFSU2 Perfect Shift implementation. The exact green shift window and event-type discriminator for Drag are not yet confirmed, and the user's on-device result must be tested in the exact Drag event before calling it Perfect Shift. Do not arm it for an event unless the user is in the intended Drag race and telemetry is reporting valid data. Infinite NOS, Race Assist, and Perfect Drift remain pending.
+
 ## User-reported telemetry and Stop-button issue
 
 The user's screenshot while the game displayed **Event Results** showed game-flow state `0`. This is not an active driving frame, so the telemetry reader correctly withholds RPM/gear instead of reporting stale values. Calibration now checks for a valid snapshot before starting and explains that the player must continue from the results screen, enter an actual Drag race, and drive before capturing samples.
@@ -104,8 +110,8 @@ The initial Auto Pause build reached the Gradle build step after successful chec
 
 Implemented on `feature/mod-menu-v0.2`:
 - The existing HUD has a dedicated MOD control wired to `GameActivity.showModMenu()`.
-- The panel exposes Master, Auto Shift, Infinite NOS, Race Assist, and Perfect Drift settings.
-- Auto Shift target RPM is configurable from 5,000 to 7,500 RPM (default 7,000), aligned with the known NFSU2 1.2 engine RPM range; final per-car calibration is still required.
+- The panel exposes Master, event-scoped experimental Auto Shift, Infinite NOS, Race Assist, and Perfect Drift settings.
+- Auto Shift target RPM is configurable from 5,000 to 11,000 RPM (default 7,000).
 - Settings are stored separately at `<gameRoot>/mods/NFSU2_ModMenu/modmenu.ini`.
 - All options default OFF. Saving uses a temporary file and a backup/rollback path to avoid deleting a prior configuration on a failed write.
 - The MOD HUD control remains available when the touch-control layout is hidden.
@@ -121,13 +127,13 @@ Implemented as read-only diagnostic groundwork:
 - The raw gear counter is interpreted as 0 reverse, 1 neutral, 2 first gear, and so on.
 
 Not implemented:
-- No cheat currently changes live gameplay.
-- Auto Shift / Perfect Shift still needs a verified drag-event gate and exact in-game shift timing window. Do not assume a generic RPM threshold equals the game's Perfect Shift judgement.
+- The experimental Auto Shift controller can send the mapped Shift Up key in its specifically armed event when configured RPM/throttle/gear conditions match. This is an RPM-triggered prototype, not a confirmed Perfect Shift implementation.
+- Exact NFSU2 Drag event identifier and green Perfect Shift timing window still require on-device validation. Do not claim it is “always Perfect”.
 - Infinite NOS has no verified race NOS hook.
 - Race Assist has no verified opponent or race-result hook.
 - Perfect Drift has no verified drift scoring or vehicle-control hook.
 
 Validation:
 - Source integration points and branch contents were inspected through GitHub.
-- GitHub Actions build `42421116847` succeeded for the earlier telemetry/footer baseline. The shift-calibration addition is a newer commit and requires its own fresh build and on-device test.
-- Do not merge this draft or distribute it as a functioning cheat APK until the Android build and on-device regression tests pass.
+- GitHub Actions run `42469535739` built native Rust and `libnfsu2_roam.so` successfully, but failed only when Gradle 8.9 distribution download returned HTTP 504 after three attempts. The wrapper now uses the Huawei Cloud Gradle 8.9 mirror; current build run `42469806108` is testing that change.
+- Do not merge this draft or distribute it until the Gradle build, ARM64 APK, and on-device Auto Shift regression test pass.
