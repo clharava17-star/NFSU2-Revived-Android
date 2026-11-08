@@ -166,6 +166,7 @@ public final class GameActivity extends NativeActivity {
         try { nativeKeyNav(scan, down); } catch (Throwable ignored) {}
     }
     private static native void nativeKeyNav(int scan, boolean down);
+    private static native void nativeSetModMenuPaused(boolean paused);
     private static boolean nativeDrivingControls() { return com.nfsu2.androidevolved.GameActivity.nativeDrivingControls(); }
     private static boolean nativeGamepadUsed() { return com.nfsu2.androidevolved.GameActivity.nativeGamepadUsed(); }
     private static void nativeTypeText(String value, boolean replace) { com.nfsu2.androidevolved.GameActivity.nativeTypeText(value, replace); }
@@ -553,6 +554,8 @@ public final class GameActivity extends NativeActivity {
             return;
         }
         runOnUiThread(() -> {
+            // Freeze the guest simulation while the settings panel is open.
+            nativeSetModMenuPaused(true);
             ModMenuConfig.Settings settings = ModMenuConfig.load(this);
             LinearLayout form = new LinearLayout(this);
             form.setOrientation(LinearLayout.VERTICAL);
@@ -906,6 +909,8 @@ public final class GameActivity extends NativeActivity {
             });
             dialog.setOnDismissListener(ignored -> {
                 if (!calibrationRunning[0]) calibrationHandler.removeCallbacks(calibrationPoll[0]);
+                // Resume the game for Close, Save, All OFF, Back, or calibration start.
+                nativeSetModMenuPaused(false);
             });
             allOffButton.setOnClickListener(button -> {
                 ModMenuConfig.Settings disabled = new ModMenuConfig.Settings();
