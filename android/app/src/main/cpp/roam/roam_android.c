@@ -272,6 +272,7 @@ static void mod_telemetry_update(void) {
        Car+0x10 -> RideInfo; RideInfo+0x10 -> RidePhysicsInfo; CPI is inline at RPI+0x30.
        RidePhysicsInfo::GetCarPhysicsInfo returns this block after performance,
        ECU/turbo, transmission, unique and race-mode modifiers have been applied. */
+    uint32_t active_cpi = 0u;
     if (car <= 0xFFFFFFEFu && rh_mem_committed(car + 0x10u, 4)) {
         const uint32_t ride = MR32(car + 0x10u);
         if (ride && ride <= 0xFFFFFFEBu && rh_mem_committed(ride + 0x10u, 4)) {
@@ -279,6 +280,7 @@ static void mod_telemetry_update(void) {
             if (ride_physics && ride_physics <= 0xFFFFFFCFu) {
                 const uint32_t cpi = ride_physics + 0x30u;
                 if (rh_mem_committed(cpi, 0x1FCu)) {
+                    active_cpi = cpi;
                     const float idle_rpm = MRF32(cpi + 0x1F0u);
                     const float redline_rpm = MRF32(cpi + 0x1F4u);
                     const float max_rpm = MRF32(cpi + 0x1F8u);
@@ -312,9 +314,8 @@ static void mod_telemetry_update(void) {
                 const float shift_up = MRF32(drive_train + 0x84u + 4u * (uint32_t)(drive_gear >= 0 && drive_gear <= 8 ? drive_gear : 0));
                 const float perfect_range_mul = MRF32(drive_train + 0xE4u);
                 const int perf_type = (int32_t)MR32(drive_train + 0xF0u);
-                const uint32_t cpi = (ride_physics && ride_physics <= 0xFFFFFFCFu) ? ride_physics + 0x30u : 0u;
-                const int forward_gears = cpi && rh_mem_committed(cpi + 0x1C8u, 4)
-                        ? (int32_t)MR32(cpi + 0x1C8u) : 0;
+                const int forward_gears = active_cpi && rh_mem_committed(active_cpi + 0x1C8u, 4)
+                        ? (int32_t)MR32(active_cpi + 0x1C8u) : 0;
                 const int max_diff_index = perf_type * 9 + drive_gear;
                 if (drive_gear >= 2 && drive_gear <= 7
                         && forward_gears >= drive_gear - 1
