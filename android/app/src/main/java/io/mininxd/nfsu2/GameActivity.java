@@ -194,9 +194,7 @@ public final class GameActivity extends NativeActivity {
         ModMenuConfig.Settings config = ModMenuConfig.load(this);
         if (!config.master || !config.autoPerfectShift
                 || config.autoShiftTrackId < 0 || config.autoShiftRaceType < 0
-                || !io.mininxd.nfsu2.net.RoamNativeBridge.isLoaded()) {
-            return;
-        }
+                || !io.mininxd.nfsu2.net.RoamNativeBridge.isLoaded()) return;
 
         final int armedTrack = config.autoShiftTrackId;
         final int armedRaceType = config.autoShiftRaceType;
@@ -205,22 +203,26 @@ public final class GameActivity extends NativeActivity {
         final int[] pendingGear = {-1};
         final long[] pendingSince = {0L};
         final long[] lastShiftAt = {0L};
-        final boolean[] waitForRpmDrop = {false};
+        final boolean[] waitForNextGearRpmDrop = {false};
         final int[] observedGear = {-1};
         final int[] observedCarType = {-1};
-        final float[] previousRpm = {-1.0f};
-        final long[] previousRpmAt = {0L};
+        // RPM is refreshed once per physics frame. Track those changes rather
+        // than poll intervals, then predict the value at the next game frame.
+        final float[] previousFrameRpm = {-1.0f};
+        final long[] lastFrameRpmAt = {0L};
+        final float[] frameIntervalMs = {16.7f};
+        final float[] rpmRisePerMs = {0.0f};
         final Runnable[] loop = new Runnable[1];
 
         loop[0] = () -> {
             if (autoShiftHandler != handler || autoShiftPoll != loop[0]) return;
             if (!foreground || isFinishing() || isDestroyed()) {
-                handler.postDelayed(loop[0], 100);
+                handler.postDelayed(loop[0], 100L);
                 return;
             }
             try {
                 float[] sample = io.mininxd.nfsu2.net.RoamNativeBridge.nativeGetGameTelemetry();
-                boolean matchingEvent = sample != null && sample.length >= 27
+                boolean matchingEvent = sample != null && sample.length >= 33
                         && sample[0] > 0.5f
                         && Math.round(sample[1]) == 6
                         && Math.round(sample[8]) == 4
@@ -231,82 +233,103 @@ public final class GameActivity extends NativeActivity {
                 int carType = matchingEvent ? Math.round(sample[23]) : -1;
                 float idleRpm = matchingEvent ? sample[24] : -1.0f;
                 float maxRpm = matchingEvent ? sample[25] : -1.0f;
-                float dragShiftRpm = matchingEvent ? sample[26] : -1.0f;
-                boolean validEngineRange = carType >= 0
+                float shiftUpRpm = matchingEvent ? sample[27] : -1.0f;
+                float perfectRangeRpm = matchingEvent ? sample[28] : -1.0f;
+                int forwardGears = matchingEvent ? Math.round(sample[29]) : 0;
+                int driveTrainGear = matchingEvent ? Math.round(sample[30]) : -1;
+                int gear = matchingEvent ? Math.round(sample[5]) : -99;
+                boolean validVehicle = carType >= 0
                         && Float.isFinite(idleRpm) && Float.isFinite(maxRpm)
-                        && Float.isFinite(dragShiftRpm)
                         && idleRpm >= 300.0f && maxRpm >= idleRpm + 1000.0f
-                        && maxRpm <= 22000.0f
-                        && dragShiftRpm > idleRpm + 500.0f
-                        && dragShiftRpm < maxRpm;
+                        && maxRpm <= 22000.0f;
+                boolean validPerfectWindow = Float.isFinite(shiftUpRpm)
+                        && Float.isFinite(perfectRangeRpm)
+                        && shiftUpRpm >= 1000.0f && shiftUpRpm <= 20000.0f
+                        && perfectRangeRpm > 0.0f && perfectRangeRpm <= 5000.0f
+                        && forwardGears >= 1 && forwardGears <= 6
+                        && driveTrainGear >= 2 && driveTrainGear <= forwardGears
+                        && gear == driveTrainGear - 1;
 
-                if (!matchingEvent || !validEngineRange) {
+                if (!matchingEvent || !validVehicle || !validPerfectWindow) {
                     pendingGear[0] = -1;
-                    waitForRpmDrop[0] = false;
+                    waitForNextGearRpmDrop[0] = false;
                     observedGear[0] = -1;
                     observedCarType[0] = -1;
-                    previousRpm[0] = -1.0f;
-                    previousRpmAt[0] = 0L;
+                    previousFrameRpm[0] = -1.0f;
+                    lastFrameRpmAt[0] = 0L;
+                    rpmRisePerMs[0] = 0.0f;
+                    frameIntervalMs[0] = 16.7f;
                 } else {
-                    int gear = Math.round(sample[5]);
                     float rpm = sample[3];
                     float throttle = sample[4];
                     long now = android.os.SystemClock.elapsedRealtime();
 
-                    // Read the active vehicle's tuned Drag physics threshold every poll.
-                    // The native side resolves RideInfo -> RidePhysicsInfo -> active CPI;
-                    // a car/upgrade/mode change therefore selects the correct new value.
-                    if (observedCarType[0] != carType) {
+                    // A car swap or gear change starts a fresh RPM/frame baseline.
+                    if (observedCarType[0] != carType || observedGear[0] != gear) {
                         pendingGear[0] = -1;
-                        waitForRpmDrop[0] = false;
-                        observedGear[0] = -1;
-                        previousRpm[0] = -1.0f;
-                        previousRpmAt[0] = 0L;
-                        observedCarType[0] = carType;
-                        lastShiftAt[0] = now;
-                    }
-
-                    float targetRpm = dragShiftRpm;
-                    boolean accelerating = throttle >= 0.25f && throttle <= 1.5f
-                            && rpm > 0.0f && gear >= 1 && gear < 6;
-
-                    float rpmRisePerMs = 0.0f;
-                    if (observedGear[0] != gear) {
+                        waitForNextGearRpmDrop[0] = false;
                         observedGear[0] = gear;
-                        previousRpm[0] = rpm;
-                        previousRpmAt[0] = now;
-                    } else if (previousRpm[0] > 0.0f) {
-                        long sampleDeltaMs = now - previousRpmAt[0];
-                        if (sampleDeltaMs >= 8L && sampleDeltaMs <= 250L) {
-                            rpmRisePerMs = (rpm - previousRpm[0]) / (float) sampleDeltaMs;
+                        observedCarType[0] = carType;
+                        previousFrameRpm[0] = rpm;
+                        lastFrameRpmAt[0] = now;
+                        rpmRisePerMs[0] = 0.0f;
+                        lastShiftAt[0] = now;
+                    } else if (previousFrameRpm[0] < 0.0f) {
+                        previousFrameRpm[0] = rpm;
+                        lastFrameRpmAt[0] = now;
+                    } else if (Math.abs(rpm - previousFrameRpm[0]) >= 0.5f) {
+                        long frameDeltaMs = now - lastFrameRpmAt[0];
+                        if (frameDeltaMs >= 8L && frameDeltaMs <= 100L) {
+                            rpmRisePerMs[0] = (rpm - previousFrameRpm[0]) / (float) frameDeltaMs;
+                            frameIntervalMs[0] = Math.max(8.0f, Math.min(80.0f,
+                                    frameIntervalMs[0] * 0.75f + frameDeltaMs * 0.25f));
+                        } else {
+                            rpmRisePerMs[0] = 0.0f;
                         }
-                        previousRpm[0] = rpm;
-                        previousRpmAt[0] = now;
-                    } else {
-                        previousRpm[0] = rpm;
-                        previousRpmAt[0] = now;
+                        previousFrameRpm[0] = rpm;
+                        lastFrameRpmAt[0] = now;
                     }
-
-                    float predictedRpm = rpm + Math.max(0.0f, rpmRisePerMs) * 16.0f;
-                    predictedRpm = Math.min(predictedRpm, rpm + 500.0f);
 
                     if (pendingGear[0] >= 1 && gear > pendingGear[0]) {
+                        // The game accepted the upshift. The new gear has its own
+                        // shiftUp threshold; wait until RPM is below that threshold.
                         pendingGear[0] = -1;
-                        waitForRpmDrop[0] = true;
+                        waitForNextGearRpmDrop[0] = true;
+                        previousFrameRpm[0] = rpm;
+                        lastFrameRpmAt[0] = now;
+                        rpmRisePerMs[0] = 0.0f;
                     } else if (pendingGear[0] >= 1 && now - pendingSince[0] > 1200L) {
+                        // Do not spam Shift-Up if the game has not accepted the request.
                         pendingGear[0] = -1;
-                        waitForRpmDrop[0] = true;
+                        waitForNextGearRpmDrop[0] = true;
                     }
 
-                    if (waitForRpmDrop[0] && rpm < targetRpm * 0.82f) {
-                        waitForRpmDrop[0] = false;
+                    if (waitForNextGearRpmDrop[0] && rpm < shiftUpRpm) {
+                        waitForNextGearRpmDrop[0] = false;
                     }
 
-                    boolean shiftPointReached = rpm >= targetRpm
-                            || (rpm >= targetRpm * 0.90f && predictedRpm >= targetRpm);
-                    if (pendingGear[0] < 0 && !waitForRpmDrop[0]
-                            && accelerating && shiftPointReached
-                            && now - lastShiftAt[0] >= 450L) {
+                    boolean accelerating = throttle >= 0.25f && throttle <= 1.5f
+                            && rpm > 0.0f && gear >= 1 && gear < forwardGears;
+                    float windowStart = shiftUpRpm;
+                    float windowEnd = shiftUpRpm + 0.05f * perfectRangeRpm;
+                    float targetCenter = shiftUpRpm + 0.025f * perfectRangeRpm;
+
+                    // RateShift awards Perfect (1.0) only just above shiftUp[gear],
+                    // inside a 5%-of-R window. Predict to the next physics frame so
+                    // Shift-Up is delivered as RPM enters that narrow green window.
+                    long sinceFrameMs = lastFrameRpmAt[0] > 0L ? now - lastFrameRpmAt[0] : 0L;
+                    float timeToNextFrameMs = Math.max(0.0f,
+                            Math.min(frameIntervalMs[0], frameIntervalMs[0] - sinceFrameMs));
+                    float predictedNextFrameRpm = rpm
+                            + Math.max(0.0f, rpmRisePerMs[0]) * timeToNextFrameMs;
+                    boolean alreadyInsidePerfectWindow = rpm >= windowStart && rpm < windowEnd;
+                    boolean nextFrameInsidePerfectWindow = predictedNextFrameRpm >= targetCenter
+                            && predictedNextFrameRpm < windowEnd;
+
+                    if (pendingGear[0] < 0 && !waitForNextGearRpmDrop[0]
+                            && accelerating
+                            && (alreadyInsidePerfectWindow || nextFrameInsidePerfectWindow)
+                            && now - lastShiftAt[0] >= 250L) {
                         pendingGear[0] = gear;
                         pendingSince[0] = now;
                         lastShiftAt[0] = now;
@@ -315,13 +338,15 @@ public final class GameActivity extends NativeActivity {
                         handler.postDelayed(() -> {
                             nativeKey(shiftScan, false);
                             if (autoShiftPressedScan == shiftScan) autoShiftPressedScan = -1;
-                        }, 65L);
+                        }, 45L);
                     }
                 }
             } catch (Throwable error) {
                 android.util.Log.w("NFSU2-ModMenu", "Auto Shift telemetry: " + error.getClass().getSimpleName());
             }
-            handler.postDelayed(loop[0], 16L);
+            // The exact Perfect window is narrow; poll every 4 ms and use the
+            // measured physics-frame cadence for the next-frame RPM estimate.
+            handler.postDelayed(loop[0], 4L);
         };
 
         autoShiftHandler = handler;
@@ -746,7 +771,7 @@ public final class GameActivity extends NativeActivity {
                         return;
                     }
                     float[] t = io.mininxd.nfsu2.net.RoamNativeBridge.nativeGetGameTelemetry();
-                    if (t == null || t.length < 27) {
+                    if (t == null || t.length < 33) {
                         telemetryText.setText("Telemetry snapshot unavailable or bridge is outdated. Reinstall the latest Mod Edition build.");
                         return;
                     }
@@ -795,11 +820,13 @@ public final class GameActivity extends NativeActivity {
                             : String.format(java.util.Locale.US, "%.0f%%", t[4] * 100.0f);
                     String raceLabel = t[12] > 0.5f ? "RACE ACTIVE" : "not in active race";
                     String engineLabel = t[23] >= 0.0f && t[25] > t[24] + 1000.0f
-                            && t[26] > t[24] + 500.0f && t[26] < t[25]
+                            && t[27] >= 1000.0f && t[28] > 0.0f
+                            && Math.round(t[30]) >= 2 && Math.round(t[29]) >= Math.round(t[30])
                             ? String.format(java.util.Locale.US,
-                                    "Car type %d | active idle %.0f | max %.0f RPM | Drag shift threshold %.0f RPM",
-                                    Math.round(t[23]), t[24], t[25], t[26])
-                            : "Active tuned Drag engine data unavailable | Auto Shift will stay idle";
+                                    "Car %d | Gear %d/%d | Shift %.0f RPM | Perfect window %.0f–%.0f RPM | Last %.2f @ %.0f RPM",
+                                    Math.round(t[23]), Math.round(t[30]) - 1, Math.round(t[29]),
+                                    t[27] + 0.025f * t[28], t[27], t[27] + 0.05f * t[28], t[31], t[32])
+                            : "Active per-gear Perfect Shift window unavailable | Auto Shift will stay idle";
                     String diagnostics = t.length >= 23
                             ? String.format(java.util.Locale.US,
                                     "\nFrame hooks %d | JNI reads %d | base symbol %s"
@@ -823,7 +850,7 @@ public final class GameActivity extends NativeActivity {
             form.addView(readTelemetryButton);
 
             TextView autoShiftInfo = new TextView(this);
-            autoShiftInfo.setText("Universal Auto Shift: reads the current car's tuned Drag physics (including installed parts) and uses its own redline-based shift threshold. No per-car setup or manual calibration is required.");
+            autoShiftInfo.setText("Universal Auto Shift: reads the active gear's exact Drag shift point and Perfect Shift RPM window from the game's tuned drivetrain data. No per-car setup or manual calibration is required.");
             autoShiftInfo.setTextSize(12);
             autoShiftInfo.setPadding(0, dp(8), 0, dp(4));
             form.addView(autoShiftInfo);
@@ -842,11 +869,11 @@ public final class GameActivity extends NativeActivity {
             if (activeEventAtOpen[0]) {
                 autoShiftScope.setText("Active event detected: race type " + eventTypeAtOpen[0]
                         + " | track " + eventTrackAtOpen[0]
-                        + ". Saving Auto Shift arms this Drag event; the car's tuned Drag shift threshold is detected automatically.");
+                        + ". Saving Auto Shift arms this Drag event; the car's per-gear Perfect Shift window is detected automatically.");
             } else if (settings.autoShiftTrackId >= 0) {
                 autoShiftScope.setText("Auto Shift is armed for race type " + settings.autoShiftRaceType
                         + " | track " + settings.autoShiftTrackId
-                        + ". Open MOD while driving in a Drag event to arm a different event. the tuned Drag threshold is detected automatically.");
+                        + ". Open MOD while driving in a Drag event to arm a different event. the per-gear Perfect Shift window is detected automatically.");
             } else {
                 autoShiftScope.setText("To arm Auto Shift: start a Drag race, wait until the car is driving, then open MOD and save with Auto Shift ON.");
             }
@@ -878,7 +905,7 @@ public final class GameActivity extends NativeActivity {
             form.addView(filePath);
 
             TextView safety = new TextView(this);
-            safety.setText("Auto Shift reads the active car's tuned physics threshold from RidePhysicsInfo and uses the Drag model's redline threshold (active CPI +0x1F4 minus 100 RPM). It updates when the car or installed physics changes. It only sends Shift-Up in the armed Drag event and does not modify Career data.");
+            safety.setText("Auto Shift reads the game's per-gear shiftUp point and RateShift Perfect window (shiftUp to shiftUp + 5% of the per-gear range), then predicts the next physics frame. It updates for each vehicle and gear. It only sends Shift-Up in the armed Drag event and does not modify Career data.");
             safety.setTextSize(12);
             safety.setPadding(0, dp(8), 0, 0);
             form.addView(safety);
