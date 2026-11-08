@@ -139,55 +139,85 @@ int roam_android_init_symbols(void) {
  * walks pointers while the guest simulation is updating them.
  */
 static pthread_mutex_t g_mod_telemetry_mu = PTHREAD_MUTEX_INITIALIZER;
-static jfloat g_mod_telemetry[6] = {0, 0, 0, 0, 0, 0};
-/* [0]=valid, [1]=game-flow state, [2]=speed m/s, [3]=RPM,
- * [4]=throttle, [5]=gear raw (0 reverse, 1 neutral, 2 first, ...). */
+static jfloat g_mod_telemetry[13] = {0, 0, 0, 0, -1, -99, 0, 0, -1, -1, -1, 0, 0};
+/*
+ * [0] snapshot valid, [1] GameFlow state, [2] speed m/s, [3] RPM,
+ * [4] throttle (-1 if controller unavailable), [5] signed gear (-1 reverse, 0 neutral, 1 first...),
+ * [6] Player* readable, [7] Car* readable, [8] race coordinator state,
+ * [9] race type, [10] track ID, [11] career race active, [12] in-world race (flow=6 and race state=4).
+ *
+ * Game addresses and car field offsets match the v1.2 NA port definitions in roam_game.c.
+ * Gear and throttle deliberately use the same fields as local_state() in roam_game.c.
+ */
 
-static void mod_telemetry_publish(const jfloat values[6]) {
+static void mod_telemetry_publish(const jfloat values[13]) {
     pthread_mutex_lock(&g_mod_telemetry_mu);
     memcpy(g_mod_telemetry, values, sizeof(g_mod_telemetry));
     pthread_mutex_unlock(&g_mod_telemetry_mu);
 }
 
 static void mod_telemetry_update(void) {
-    jfloat next[6] = {0, 0, 0, 0, 0, -1.0f};
-    const uint32_t flow_va = 0x008654A4u;
-    const uint32_t player_va = 0x008900ACu;
+    jfloat next[13] = {0, 0, 0, 0, -1.0f, -99.0f, 0, 0, -1, -1, -1, 0, 0};
+    const uint32_t flow_va = 0x008654A4u;       /* G_FLOW: 3 front end, 6 in world */
+    const uint32_t player_va = 0x008900ACu;     /* SPLIT_PLAYERS_INDEX: Player* */
+    const uint32_t race_va = 0x00890118u;       /* G_RACE: +0 state, 4 while racing */
+    const uint32_t race_type_va = 0x0089E7B0u;  /* G_RACETYPE */
+    const uint32_t track_va = 0x0089E7A0u;      /* G_TRACK */
+    const uint32_t career_race_va = 0x00863470u;/* G_CAREER_RACE */
 
     if (!g_p_mem_base || !*g_p_mem_base || !g_p_esp || !*g_p_esp) {
         mod_telemetry_publish(next);
         return;
     }
-    if (!rh_mem_committed(flow_va, 4) || !rh_mem_committed(player_va, 4)) {
+
+    if (rh_mem_committed(flow_va, 4)) next[1] = (jfloat)MR32(flow_va);
+    if (rh_mem_committed(race_type_va, 4)) next[9] = (jfloat)MR32(race_type_va);
+    if (rh_mem_committed(track_va, 4)) next[10] = (jfloat)MR32(track_va);
+    if (rh_mem_committed(career_race_va, 4)) next[11] = MR32(career_race_va) ? 1.0f : 0.0f;
+
+    if (rh_mem_committed(race_va, 4)) {
+        const uint32_t race = MR32(race_va);
+        if (race && race <= 0xFFFFF3BBu && rh_mem_committed(race, 0xC44u)) {
+            next[8] = (jfloat)MR32(race);
+        }
+    }
+    next[12] = (next[1] == 6.0f && next[8] == 4.0f) ? 1.0f : 0.0f;
+
+    if (!rh_mem_committed(player_va, 4)) {
         mod_telemetry_publish(next);
         return;
     }
-
-    const uint32_t flow = MR32(flow_va);
-    next[1] = (jfloat)flow;
-    /* A car mirror is valid only in the actual gameplay state. */
-    if (flow != 6u) {
-        mod_telemetry_publish(next);
-        return;
-    }
-
     const uint32_t player = MR32(player_va);
     if (!player || player > 0xFFFFFFFBu || !rh_mem_committed(player + 4u, 4)) {
         mod_telemetry_publish(next);
         return;
     }
+    next[6] = 1.0f;
+
     const uint32_t car = MR32(player + 4u);
-    if (!car || car > 0xFFFFFB13u || !rh_mem_committed(car, 0x4ECu)) {
+    if (!car || car > 0xFFFFF61Bu || !rh_mem_committed(car, 0x9E4u)) {
         mod_telemetry_publish(next);
         return;
     }
+    next[7] = 1.0f;
 
     const float speed = MRF32(car + 0x42Cu);
     const float rpm = MRF32(car + 0x440u);
-    const float throttle = MRF32(car + 0x438u);
-    if (!isfinite(speed) || !isfinite(rpm) || !isfinite(throttle)
+    const int gear = (int8_t)MR32(car + 0x434u); /* same field as roam_game.c local_state() */
+
+    float throttle = -1.0f;
+    if (car <= 0xFFFFFFCBu && rh_mem_committed(car + 0x30u, 4)) {
+        const uint32_t controller = MR32(car + 0x30u);
+        if (controller && controller <= 0xFFFFFDEBu
+                && rh_mem_committed(controller + 0x20Cu, 4)) {
+            throttle = MRF32(controller + 0x20Cu); /* same controller field as local_state() */
+        }
+    }
+
+    if (!isfinite(speed) || !isfinite(rpm)
             || speed < -1.0f || speed > 250.0f || rpm < 0.0f || rpm > 20000.0f
-            || throttle < -0.2f || throttle > 1.5f) {
+            || gear < -1 || gear > 8
+            || (throttle >= 0.0f && (!isfinite(throttle) || throttle > 1.5f))) {
         mod_telemetry_publish(next);
         return;
     }
@@ -195,34 +225,21 @@ static void mod_telemetry_update(void) {
     next[2] = speed;
     next[3] = rpm;
     next[4] = throttle;
-
-    /* Gearbox snapshot: mirror+0x34 -> +0x18 -> gear at +0x34. */
-    if (car <= 0xFFFFFFCBu && rh_mem_committed(car + 0x34u, 4)) {
-        const uint32_t gearbox_owner = MR32(car + 0x34u);
-        if (gearbox_owner && gearbox_owner <= 0xFFFFFFE3u
-                && rh_mem_committed(gearbox_owner + 0x18u, 4)) {
-            const uint32_t gearbox = MR32(gearbox_owner + 0x18u);
-            if (gearbox && gearbox <= 0xFFFFFFC7u
-                    && rh_mem_committed(gearbox + 0x34u, 4)) {
-                const uint32_t gear = MR32(gearbox + 0x34u);
-                if (gear <= 8u) next[5] = (jfloat)gear;
-            }
-        }
-    }
-
-    /* Require both live RPM and a plausible gearbox snapshot. */
-    next[0] = (next[3] >= 500.0f && next[5] >= 0.0f) ? 1.0f : 0.0f;
+    next[5] = (jfloat)gear;
+    /* Snapshot validity is independent from race state; the UI shows both.
+       Calibration still requires the documented in-world race state. */
+    next[0] = 1.0f;
     mod_telemetry_publish(next);
 }
 
 static jfloatArray mod_telemetry_array(JNIEnv *env) {
-    jfloat snapshot[6];
+    jfloat snapshot[13];
     pthread_mutex_lock(&g_mod_telemetry_mu);
     memcpy(snapshot, g_mod_telemetry, sizeof(snapshot));
     pthread_mutex_unlock(&g_mod_telemetry_mu);
 
-    jfloatArray result = (*env)->NewFloatArray(env, 6);
-    if (result) (*env)->SetFloatArrayRegion(env, result, 0, 6, snapshot);
+    jfloatArray result = (*env)->NewFloatArray(env, 13);
+    if (result) (*env)->SetFloatArrayRegion(env, result, 0, 13, snapshot);
     return result;
 }
 
