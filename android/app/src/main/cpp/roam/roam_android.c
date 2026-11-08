@@ -119,8 +119,9 @@ static inline void roam_android_patch_carpool(void) {
 }
 
 static int roam_android_resolve_symbols(void) {
-    if (!g_p_mem_base || !g_p_esp || !g_p_recomp_lookup
-            || !g_p_eax || !g_p_ecx || !g_p_edx || !g_p_guest_is_readable) {
+    static int lookup_attempted = 0;
+    if (!lookup_attempted) {
+        lookup_attempted = 1;
         void *h = dlopen("libnfsu2_android.so", RTLD_NOLOAD | RTLD_GLOBAL);
         if (!h) h = dlopen("libnfsu2_android.so", RTLD_LAZY | RTLD_GLOBAL);
         if (!h) h = RTLD_DEFAULT;
