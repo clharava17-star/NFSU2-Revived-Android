@@ -39,6 +39,9 @@ public final class GameActivity extends NativeActivity {
     private TextView status;
     private PopupWindow statusWindow;
     private PopupWindow controlsWindow;
+    // Only send Escape when the game is actually in driving mode. Menu/results
+    // screens must not receive a synthetic Back press when MOD is opened.
+    private boolean modMenuPausedGameplay;
     private DiagnosticOverlay diagnosticOverlay;
     private RacingControlsView touchControls;
     private boolean statusHidden;
@@ -64,6 +67,10 @@ public final class GameActivity extends NativeActivity {
     };
     private int keyLeft = 0xcb;
     private int keyRight = 0xcd;
+    private int keyShiftUp = 0x2a;
+    private Handler autoShiftHandler;
+    private Runnable autoShiftPoll;
+    private int autoShiftPressedScan = -1;
 
     private void sendCombinedKey(int scan) {
         boolean held=touchKeys[scan]||(scan==keyLeft&&tiltLeft)||(scan==keyRight&&tiltRight);
@@ -150,6 +157,7 @@ public final class GameActivity extends NativeActivity {
                     if (actionKeys != null && actionKeys.length >= 11) {
                         keyLeft = actionKeys[2];
                         keyRight = actionKeys[3];
+                        keyShiftUp = actionKeys[6];
                         touchControls.updateActionKeys(actionKeys);
                     }
                 } catch (Throwable ignored) {}
@@ -161,8 +169,154 @@ public final class GameActivity extends NativeActivity {
         com.nfsu2.androidevolved.GameActivity.nativeKey(scan, down);
         try { nativeKeyNav(scan, down); } catch (Throwable ignored) {}
     }
+    // Reuse the same Escape scan code as the existing HUD Pause control.
+    private void pulseGamePauseKey() {
+        nativeKey(0x01, true);
+        new Handler(Looper.getMainLooper()).postDelayed(() -> nativeKey(0x01, false), 140);
+    }
     private static native void nativeKeyNav(int scan, boolean down);
     private static boolean nativeDrivingControls() { return com.nfsu2.androidevolved.GameActivity.nativeDrivingControls(); }
+
+    private void stopAutoShiftController() {
+        Handler handler = autoShiftHandler;
+        Runnable poll = autoShiftPoll;
+        autoShiftHandler = null;
+        autoShiftPoll = null;
+        if (handler != null && poll != null) handler.removeCallbacks(poll);
+        if (autoShiftPressedScan >= 0) {
+            nativeKey(autoShiftPressedScan, false);
+            autoShiftPressedScan = -1;
+        }
+    }
+
+    private void startAutoShiftController() {
+        stopAutoShiftController();
+        ModMenuConfig.Settings config = ModMenuConfig.load(this);
+        if (!config.master || !config.autoPerfectShift
+                || config.autoShiftTrackId < 0 || config.autoShiftRaceType < 0
+                || !io.mininxd.nfsu2.net.RoamNativeBridge.isLoaded()) return;
+
+        final int armedTrack = config.autoShiftTrackId;
+        final int armedRaceType = config.autoShiftRaceType;
+        final int shiftScan = keyShiftUp > 0 ? keyShiftUp : 0x2a;
+        final Handler handler = new Handler(Looper.getMainLooper());
+        final int[] pendingGear = {-1};
+        final long[] pendingSince = {0L};
+        final long[] lastShiftAt = {0L};
+        final boolean[] waitForNextGearRpmDrop = {false};
+        final int[] observedGear = {-1};
+        final int[] observedCarType = {-1};
+        final Runnable[] loop = new Runnable[1];
+
+        loop[0] = () -> {
+            if (autoShiftHandler != handler || autoShiftPoll != loop[0]) return;
+            if (!foreground || isFinishing() || isDestroyed()) {
+                handler.postDelayed(loop[0], 100L);
+                return;
+            }
+            try {
+                float[] sample = io.mininxd.nfsu2.net.RoamNativeBridge.nativeGetGameTelemetry();
+                boolean matchingEvent = sample != null && sample.length >= 33
+                        && sample[0] > 0.5f
+                        && Math.round(sample[1]) == 6
+                        && Math.round(sample[8]) == 4
+                        && sample[12] > 0.5f
+                        && Math.round(sample[9]) == armedRaceType
+                        && Math.round(sample[10]) == armedTrack;
+
+                int carType = matchingEvent ? Math.round(sample[23]) : -1;
+                float idleRpm = matchingEvent ? sample[24] : -1.0f;
+                float maxRpm = matchingEvent ? sample[25] : -1.0f;
+                float shiftUpRpm = matchingEvent ? sample[27] : -1.0f;
+                float perfectRangeRpm = matchingEvent ? sample[28] : -1.0f;
+                int forwardGears = matchingEvent ? Math.round(sample[29]) : 0;
+                int driveTrainGear = matchingEvent ? Math.round(sample[30]) : -1;
+                int gear = matchingEvent ? Math.round(sample[5]) : -99;
+                boolean validVehicle = carType >= 0
+                        && Float.isFinite(idleRpm) && Float.isFinite(maxRpm)
+                        && idleRpm >= 300.0f && maxRpm >= idleRpm + 1000.0f
+                        && maxRpm <= 22000.0f;
+                boolean validPerfectWindow = Float.isFinite(shiftUpRpm)
+                        && Float.isFinite(perfectRangeRpm)
+                        && shiftUpRpm >= 1000.0f && shiftUpRpm <= 20000.0f
+                        && perfectRangeRpm > 0.0f && perfectRangeRpm <= 5000.0f
+                        && forwardGears >= 1 && forwardGears <= 6
+                        && driveTrainGear >= 2 && driveTrainGear <= forwardGears
+                        && gear == driveTrainGear;
+
+                if (!matchingEvent || !validVehicle || !validPerfectWindow) {
+                    pendingGear[0] = -1;
+                    waitForNextGearRpmDrop[0] = false;
+                    observedGear[0] = -1;
+                    observedCarType[0] = -1;
+                } else {
+                    float rpm = sample[3];
+                    float throttle = sample[4];
+                    long now = android.os.SystemClock.elapsedRealtime();
+
+                    // Keep shift confirmation separate from gear baseline updates.
+                    boolean carChanged = observedCarType[0] != carType;
+                    boolean gearChanged = observedGear[0] != gear;
+                    if (carChanged) {
+                        pendingGear[0] = -1;
+                        waitForNextGearRpmDrop[0] = false;
+                        observedCarType[0] = carType;
+                        observedGear[0] = gear;
+                        lastShiftAt[0] = now;
+                    } else if (gearChanged) {
+                        boolean acceptedUpshift = pendingGear[0] >= 2 && gear > pendingGear[0];
+                        pendingGear[0] = -1;
+                        waitForNextGearRpmDrop[0] = acceptedUpshift;
+                        observedGear[0] = gear;
+                    }
+
+                    if (pendingGear[0] >= 2 && now - pendingSince[0] > 1200L) {
+                        // Do not spam Shift-Up if the game has not accepted the request.
+                        pendingGear[0] = -1;
+                        waitForNextGearRpmDrop[0] = true;
+                    }
+
+                    // The current gear has a different shift point; after a confirmed
+                    // change, re-arm when RPM is below that new gear's threshold.
+                    if (waitForNextGearRpmDrop[0] && rpm < shiftUpRpm) {
+                        waitForNextGearRpmDrop[0] = false;
+                    }
+
+                    boolean accelerating = throttle >= 0.25f && throttle <= 1.5f
+                            && rpm > 0.0f && gear >= 2 && gear <= forwardGears;
+                    float windowStart = shiftUpRpm;
+                    // Native telemetry returns the exact upper boundary delta:
+                    // (1 - gearboxMatchWindow) * gearboxShiftWeights * coefficientE4.
+                    // ShiftMatch (0x594F20) gives its maximum 1.0 result strictly
+                    // inside this interval; no guessed percentage is applied here.
+                    float windowEnd = shiftUpRpm + perfectRangeRpm;
+                    boolean insidePerfectWindow = rpm > windowStart && rpm < windowEnd;
+
+                    if (pendingGear[0] < 0 && !waitForNextGearRpmDrop[0]
+                            && accelerating && insidePerfectWindow
+                            && now - lastShiftAt[0] >= 250L) {
+                        pendingGear[0] = gear;
+                        pendingSince[0] = now;
+                        lastShiftAt[0] = now;
+                        nativeKey(shiftScan, true);
+                        autoShiftPressedScan = shiftScan;
+                        handler.postDelayed(() -> {
+                            nativeKey(shiftScan, false);
+                            if (autoShiftPressedScan == shiftScan) autoShiftPressedScan = -1;
+                        }, 45L);
+                    }
+                }
+            } catch (Throwable error) {
+                android.util.Log.w("NFSU2-ModMenu", "Auto Shift telemetry: " + error.getClass().getSimpleName());
+            }
+            // Poll the actual game RPM frequently enough to catch the narrow RateShift window.
+            handler.postDelayed(loop[0], 4L);
+        };
+
+        autoShiftHandler = handler;
+        autoShiftPoll = loop[0];
+        handler.post(loop[0]);
+    }
     private static boolean nativeGamepadUsed() { return com.nfsu2.androidevolved.GameActivity.nativeGamepadUsed(); }
     private static void nativeTypeText(String value, boolean replace) { com.nfsu2.androidevolved.GameActivity.nativeTypeText(value, replace); }
     private static void nativePointer(float x, float y, int phase) { com.nfsu2.androidevolved.GameActivity.nativePointer(x, y, phase); }
@@ -251,6 +405,45 @@ public final class GameActivity extends NativeActivity {
                     nativeFrameLimit(Integer.parseInt(option.values[which]));dialog.dismiss();
                 }).setNegativeButton("Cancel",null).show();
     }
+    /**
+     * Android 11+ grants all-files access per package. Mod Edition has its own application ID,
+     * so permission granted to the original NFSU2 app does not automatically carry over.
+     */
+    private boolean hasModMenuStorageAccess() {
+        if (Build.VERSION.SDK_INT >= 30) return Environment.isExternalStorageManager();
+        return checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void showModMenuStorageAccessDialog() {
+        String target = ModMenuConfig.file(this).getAbsolutePath();
+        if (Build.VERSION.SDK_INT >= 30 && !hasModMenuStorageAccess()) {
+            new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                    .setTitle("Allow Mod Edition file access")
+                    .setMessage("Android gives this permission separately to each app. The original NFSU2 permission does not automatically apply to Mod Edition. Enable \"Allow access to manage all files\" for NFSU2 Revived Mod Edition, return to the game, then tap Save settings again.\n\nTarget: " + target)
+                    .setPositiveButton("Open access settings", (dialog, which) -> {
+                        try {
+                            startActivity(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                    Uri.parse("package:" + getPackageName())));
+                        } catch (Exception unavailable) {
+                            try {
+                                startActivity(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
+                            } catch (Exception ignored) {
+                                Toast.makeText(this, "Open Android Settings > Apps > Special app access > All files access.", Toast.LENGTH_LONG).show();
+                            }
+                        }
+                    })
+                    .setNegativeButton("Later", null)
+                    .show();
+            return;
+        }
+        new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle("Cannot write Mod Menu settings")
+                .setMessage("File access is enabled, but Android still could not write the configuration. Check that the game folder exists and is writable. Career data is not modified.\n\nTarget: " + target)
+                .setPositiveButton("OK", null)
+                .show();
+    }
+
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
     private void showTextInput() {
         EditText name = new EditText(this);
@@ -443,7 +636,7 @@ public final class GameActivity extends NativeActivity {
         statusWindow = new PopupWindow(status, ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT, false);
         statusWindow.setTouchable(false);
-        touchControls = new RacingControlsView(this, this::setTouchKey, this::showTextInput,this::showTiltOptions,this::showFrameLimitOptions);
+        touchControls = new RacingControlsView(this, this::setTouchKey, this::showTextInput, this::showTiltOptions, this::showFrameLimitOptions, this::showModMenu);
         touchControls.setPointer(GameActivity::nativePointer);
         touchControls.setOnEditingChangeListener(editing -> {
             if (diagnosticOverlay != null) {
@@ -486,6 +679,317 @@ public final class GameActivity extends NativeActivity {
     }
 
     private void stopCompanionTicker() {
+    }
+
+    /** Opens the in-game Mod Menu status panel. Runtime cheats remain unavailable until verified hooks are implemented. */
+    private void showModMenu() {
+        if (isFinishing() || isDestroyed()) return;
+        // If sampling is active, stop it first, then continue opening the paused Mod Menu.
+        stopAutoShiftController();
+        runOnUiThread(() -> {
+            // Capture the event before pausing, so Auto Shift can be scoped to this exact Drag event.
+            float[] openedEvent = null;
+            try {
+                if (io.mininxd.nfsu2.net.RoamNativeBridge.isLoaded()) {
+                    openedEvent = io.mininxd.nfsu2.net.RoamNativeBridge.nativeGetGameTelemetry();
+                }
+            } catch (Throwable ignored) {}
+            final boolean[] activeEventAtOpen = {openedEvent != null && openedEvent.length >= 13
+                    && openedEvent[0] > 0.5f && Math.round(openedEvent[1]) == 6
+                    && Math.round(openedEvent[8]) == 4 && openedEvent[12] > 0.5f};
+            final int[] eventTrackAtOpen = {activeEventAtOpen[0] ? Math.round(openedEvent[10]) : -1};
+            final int[] eventTypeAtOpen = {activeEventAtOpen[0] ? Math.round(openedEvent[9]) : -1};
+            final TextView[] autoShiftScopeLabel = {null};
+
+            // Pause through the same Escape key used by the in-game HUD. Do not
+            // inject Escape on event lobby/results screens: there it acts as Back.
+            modMenuPausedGameplay = nativeDrivingControls();
+            if (modMenuPausedGameplay) {
+                pulseGamePauseKey();
+            }
+            ModMenuConfig.Settings settings = ModMenuConfig.load(this);
+            LinearLayout form = new LinearLayout(this);
+            form.setOrientation(LinearLayout.VERTICAL);
+            form.setPadding(dp(20), dp(8), dp(20), dp(8));
+
+            TextView status = new TextView(this);
+            status.setText(modMenuPausedGameplay
+                    ? "Gameplay paused while this menu is open. Auto Shift automatically detects the current car's engine RPM range and works across vehicle changes; it must be armed for this Drag event."
+                    : "Not in driving mode: pause was skipped to avoid backing out of a menu/results screen. Start the intended Drag event and open MOD while driving to arm Auto Shift.");
+            status.setTextSize(13);
+            form.addView(status);
+
+            TextView telemetryText = new TextView(this);
+            telemetryText.setText("Live telemetry: tap Read while driving in-game.");
+            telemetryText.setTextSize(12);
+            telemetryText.setPadding(0, dp(8), 0, dp(2));
+            form.addView(telemetryText);
+
+            android.widget.Button readTelemetryButton = new android.widget.Button(this);
+            readTelemetryButton.setText("Read live telemetry");
+            readTelemetryButton.setAllCaps(false);
+            readTelemetryButton.setOnClickListener(button -> {
+                try {
+                    if (!io.mininxd.nfsu2.net.RoamNativeBridge.isLoaded()) {
+                        telemetryText.setText("Telemetry bridge is not loaded.");
+                        return;
+                    }
+                    float[] t = io.mininxd.nfsu2.net.RoamNativeBridge.nativeGetGameTelemetry();
+                    if (t == null || t.length < 33) {
+                        telemetryText.setText("Telemetry snapshot unavailable or bridge is outdated. Reinstall the latest Mod Edition build.");
+                        return;
+                    }
+                    int flow = Math.round(t[1]);
+                    int raceState = Math.round(t[8]);
+                    int raceType = Math.round(t[9]);
+                    int track = Math.round(t[10]);
+                    // Let Read Live Telemetry refresh the event scope as well as the
+                    // snapshot. The event may become fully readable after the menu opens.
+                    boolean liveActiveEvent = t[0] > 0.5f && flow == 6
+                            && raceState == 4 && t[12] > 0.5f && raceType >= 0 && track >= 0;
+                    if (liveActiveEvent) {
+                        activeEventAtOpen[0] = true;
+                        eventTrackAtOpen[0] = track;
+                        eventTypeAtOpen[0] = raceType;
+                        if (autoShiftScopeLabel[0] != null) {
+                            autoShiftScopeLabel[0].setText("Active event detected: race type " + raceType
+                                    + " | track " + track + ". Saving Auto Shift arms this Drag event; its shift RPM is detected separately for every car.");
+                        }
+                    }
+                    String playerPointer = t[6] > 0.5f ? "OK" : "missing";
+                    String carPointer = t[7] > 0.5f ? "OK" : "missing";
+                    if (t[0] < 0.5f) {
+                        String diagnostics = t.length >= 23
+                                ? String.format(java.util.Locale.US,
+                                        "\nFrame hooks %d | JNI reads %d | base symbol %s"
+                                                + "\nGame memory %s | ESP symbol %s | Flow %s | Player slot %s",
+                                        Math.round(t[13]), Math.round(t[14]),
+                                        t[20] > 0.5f ? "found" : "missing",
+                                        t[21] > 0.5f ? "mapped" : "not mapped",
+                                        t[22] > 0.5f ? "found" : "missing",
+                                        t[17] > 0.5f ? "readable" : "unmapped",
+                                        t[18] > 0.5f ? "readable" : "unmapped")
+                                : "\nNative diagnostics unavailable.";
+                        telemetryText.setText(String.format(java.util.Locale.US,
+                                "No valid car snapshot | Flow %d | Player* %s | Car* %s | Race state %s | Type %d | Track %d%s",
+                                flow, playerPointer, carPointer,
+                                raceState < 0 ? "n/a" : String.valueOf(raceState), raceType, track,
+                                diagnostics));
+                        return;
+                    }
+                    int rawGear = Math.round(t[5]);
+                    String gearLabel = rawGear <= 0 ? "R" : (rawGear == 1 ? "N" : String.valueOf(rawGear - 1));
+                    String throttle = t[4] < 0.0f
+                            ? "n/a"
+                            : String.format(java.util.Locale.US, "%.0f%%", t[4] * 100.0f);
+                    String raceLabel = t[12] > 0.5f ? "RACE ACTIVE" : "not in active race";
+                    String engineLabel = t[23] >= 0.0f && t[25] > t[24] + 1000.0f
+                            && t[27] >= 1000.0f && t[28] > 0.0f
+                            && Math.round(t[30]) >= 2 && Math.round(t[29]) >= Math.round(t[30])
+                            ? String.format(java.util.Locale.US,
+                                    "Car %d | Gear %d/%d | Shift %.0f RPM | Perfect window %.0f–%.0f RPM | Last %.2f @ %.0f RPM",
+                                    Math.round(t[23]), Math.round(t[30]) - 1, Math.round(t[29]),
+                                    t[27], t[27], t[27] + t[28], t[31], t[32])
+                            : "Active per-gear Perfect Shift window unavailable | Auto Shift will stay idle";
+                    String diagnostics = t.length >= 23
+                            ? String.format(java.util.Locale.US,
+                                    "\nFrame hooks %d | JNI reads %d | base symbol %s"
+                                            + "\nGame memory %s | ESP symbol %s | Flow %s | Player slot %s",
+                                    Math.round(t[13]), Math.round(t[14]),
+                                    t[20] > 0.5f ? "found" : "missing",
+                                    t[21] > 0.5f ? "mapped" : "not mapped",
+                                    t[22] > 0.5f ? "found" : "missing",
+                                    t[17] > 0.5f ? "readable" : "unmapped",
+                                    t[18] > 0.5f ? "readable" : "unmapped")
+                            : "";
+                    telemetryText.setText(String.format(java.util.Locale.US,
+                            "Live: %.0f RPM | Gear %s | %.0f km/h | Throttle %s\n%s\nFlow %d | Race state %s | Type %d | Track %d | %s%s",
+                            t[3], gearLabel, t[2] * 3.6f, throttle, engineLabel,
+                            flow, raceState < 0 ? "n/a" : String.valueOf(raceState),
+                            raceType, track, raceLabel, diagnostics));
+                } catch (Throwable error) {
+                    telemetryText.setText("Telemetry read failed: " + error.getClass().getSimpleName());
+                }
+            });
+            form.addView(readTelemetryButton);
+
+            TextView autoShiftInfo = new TextView(this);
+            autoShiftInfo.setText("Universal Auto Shift: reads the active gear's exact Drag shift point and Perfect Shift RPM window from the game's tuned drivetrain data. No per-car setup or manual calibration is required.");
+            autoShiftInfo.setTextSize(12);
+            autoShiftInfo.setPadding(0, dp(8), 0, dp(4));
+            form.addView(autoShiftInfo);
+
+            CheckBox master = new CheckBox(this);
+            master.setText("Master Cheat — enable saved mod options");
+            master.setChecked(settings.master);
+            form.addView(master);
+
+            CheckBox autoShift = new CheckBox(this);
+            autoShift.setText("Auto Shift — armed Drag event, every car automatically");
+            autoShift.setChecked(settings.autoPerfectShift);
+            form.addView(autoShift);
+
+            TextView autoShiftScope = new TextView(this);
+            if (activeEventAtOpen[0]) {
+                autoShiftScope.setText("Active event detected: race type " + eventTypeAtOpen[0]
+                        + " | track " + eventTrackAtOpen[0]
+                        + ". Saving Auto Shift arms this Drag event; the car's per-gear Perfect Shift window is detected automatically.");
+            } else if (settings.autoShiftTrackId >= 0) {
+                autoShiftScope.setText("Auto Shift is armed for race type " + settings.autoShiftRaceType
+                        + " | track " + settings.autoShiftTrackId
+                        + ". Open MOD while driving in a Drag event to arm a different event. the per-gear Perfect Shift window is detected automatically.");
+            } else {
+                autoShiftScope.setText("To arm Auto Shift: start a Drag race, wait until the car is driving, then open MOD and save with Auto Shift ON.");
+            }
+            autoShiftScope.setTextSize(12);
+            autoShiftScope.setPadding(0, dp(2), 0, dp(4));
+            autoShiftScopeLabel[0] = autoShiftScope;
+            form.addView(autoShiftScope);
+
+            CheckBox infiniteNos = new CheckBox(this);
+            infiniteNos.setText("Infinite NOS — hook pending");
+            infiniteNos.setChecked(settings.infiniteNos);
+            form.addView(infiniteNos);
+
+            CheckBox raceAssist = new CheckBox(this);
+            raceAssist.setText("Race Assist — hook pending");
+            raceAssist.setChecked(settings.raceAssist);
+            form.addView(raceAssist);
+
+            CheckBox perfectDrift = new CheckBox(this);
+            perfectDrift.setText("Perfect Drift — hook pending");
+            perfectDrift.setChecked(settings.perfectDrift);
+            form.addView(perfectDrift);
+
+            TextView filePath = new TextView(this);
+            filePath.setText("Settings file (separate from Career save):\n"
+                    + ModMenuConfig.file(this).getAbsolutePath());
+            filePath.setTextSize(11);
+            filePath.setPadding(0, dp(8), 0, 0);
+            form.addView(filePath);
+
+            TextView safety = new TextView(this);
+            safety.setText("Auto Shift reads the game's per-gear shiftUp point and RateShift Perfect window (shiftUp to shiftUp + 5% of the per-gear range), then predicts the next physics frame. It updates for each vehicle and gear. It only sends Shift-Up in the armed Drag event and does not modify Career data.");
+            safety.setTextSize(12);
+            safety.setPadding(0, dp(8), 0, 0);
+            form.addView(safety);
+
+            android.widget.ScrollView scroll = new android.widget.ScrollView(this);
+            scroll.addView(form);
+
+            // Custom bottom action bar: All OFF | centered author watermark | Close / Save.
+            LinearLayout root = new LinearLayout(this);
+            root.setOrientation(LinearLayout.VERTICAL);
+            root.addView(scroll, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+            LinearLayout footer = new LinearLayout(this);
+            footer.setOrientation(LinearLayout.HORIZONTAL);
+            footer.setGravity(Gravity.CENTER_VERTICAL);
+            footer.setPadding(dp(8), dp(4), dp(8), dp(4));
+
+            android.widget.Button allOffButton = new android.widget.Button(this);
+            allOffButton.setText("All OFF");
+            allOffButton.setAllCaps(false);
+            allOffButton.setMinWidth(0);
+            allOffButton.setPadding(dp(8), 0, dp(8), 0);
+            footer.addView(allOffButton, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+            TextView watermark = new TextView(this);
+            watermark.setText("Yogie Clharava");
+            watermark.setTextSize(11);
+            watermark.setTextColor(0x77808080);
+            watermark.setGravity(Gravity.CENTER);
+            watermark.setTypeface(android.graphics.Typeface.create(
+                    "sans-serif", android.graphics.Typeface.BOLD_ITALIC));
+            footer.addView(watermark, new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+            android.widget.Button closeButton = new android.widget.Button(this);
+            closeButton.setText("Close");
+            closeButton.setAllCaps(false);
+            closeButton.setMinWidth(0);
+            closeButton.setPadding(dp(8), 0, dp(8), 0);
+            footer.addView(closeButton, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+            android.widget.Button saveButton = new android.widget.Button(this);
+            saveButton.setText("Save settings");
+            saveButton.setAllCaps(false);
+            saveButton.setMinWidth(0);
+            saveButton.setPadding(dp(8), 0, dp(8), 0);
+            footer.addView(saveButton, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+            root.addView(footer, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+            AlertDialog dialog = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                    .setTitle("NFSU2 Revived — Mod Menu")
+                    .setView(root)
+                    .create();
+            dialog.setOnDismissListener(ignored -> {
+                // Resume only if this dialog actually paused an active driving session.
+                if (modMenuPausedGameplay) {
+                    modMenuPausedGameplay = false;
+                    pulseGamePauseKey();
+                }
+                new Handler(Looper.getMainLooper()).postDelayed(this::startAutoShiftController, 240L);
+            });
+            allOffButton.setOnClickListener(button -> {
+                ModMenuConfig.Settings disabled = new ModMenuConfig.Settings();
+                if (ModMenuConfig.save(this, disabled)) {
+                    Toast.makeText(this, "All Mod Menu options are OFF.", Toast.LENGTH_SHORT).show();
+                    dialog.dismiss();
+                } else {
+                    showModMenuStorageAccessDialog();
+                }
+            });
+            closeButton.setOnClickListener(button -> dialog.dismiss());
+            saveButton.setOnClickListener(button -> {
+                settings.master = master.isChecked();
+                settings.autoPerfectShift = autoShift.isChecked();
+                if (settings.autoPerfectShift && !settings.master) {
+                    // Auto Shift requires Master; persist both switches consistently.
+                    settings.master = true;
+                    master.setChecked(true);
+                }
+                boolean autoShiftArmed = false;
+                if (!settings.autoPerfectShift) {
+                    settings.autoShiftTrackId = -1;
+                    settings.autoShiftRaceType = -1;
+                } else if (activeEventAtOpen[0]) {
+                    settings.autoShiftTrackId = eventTrackAtOpen[0];
+                    settings.autoShiftRaceType = eventTypeAtOpen[0];
+                    autoShiftArmed = true;
+                } else {
+                    // Preserve the ON preference even when telemetry cannot identify an event.
+                    // No event ID means the controller remains fail-closed and cannot shift.
+                    autoShiftArmed = settings.autoShiftTrackId >= 0 && settings.autoShiftRaceType >= 0;
+                }
+                settings.infiniteNos = infiniteNos.isChecked();
+                settings.raceAssist = raceAssist.isChecked();
+                settings.perfectDrift = perfectDrift.isChecked();
+                if (ModMenuConfig.save(this, settings)) {
+                    String savedMessage;
+                    if (!settings.autoPerfectShift) {
+                        savedMessage = "Mod Menu settings saved. Gameplay cheats remain off.";
+                    } else if (autoShiftArmed && activeEventAtOpen[0]) {
+                        savedMessage = "Settings saved. Auto Shift armed for this event; shift RPM adapts automatically to every car.";
+                    } else if (autoShiftArmed) {
+                        savedMessage = "Settings saved. Auto Shift preference remains ON and scoped to its saved event.";
+                    } else {
+                        savedMessage = "Settings saved. Auto Shift preference is ON, but not armed yet because live event telemetry is unavailable.";
+                    }
+                    Toast.makeText(this, savedMessage, Toast.LENGTH_LONG).show();
+                    dialog.dismiss();
+                } else {
+                    showModMenuStorageAccessDialog();
+                }
+            });
+            dialog.show();
+        });
     }
 
     private void applyCheatCodes(java.util.List<String> codes) {
@@ -597,6 +1101,7 @@ public final class GameActivity extends NativeActivity {
     }
     @Override protected void onPause() {
         foreground=false;
+        stopAutoShiftController();
         stopCompanionTicker();
         holdLanBroadcasts(false);
         updateTiltSensor();
@@ -610,6 +1115,7 @@ public final class GameActivity extends NativeActivity {
         super.onResume();
         foreground=true;
         startCompanionTicker();
+        new Handler(Looper.getMainLooper()).postDelayed(this::startAutoShiftController, 500L);
         holdLanBroadcasts(true);
         updateTiltSensor();
         if(inputManager!=null){inputManager.registerInputDeviceListener(gamepadListener,null);updateGamepads();}
@@ -681,6 +1187,7 @@ public final class GameActivity extends NativeActivity {
     }
 
     @Override protected void onDestroy() {
+        stopAutoShiftController();
         super.onDestroy();
         stopCompanionTicker();
         if (diagnosticOverlay != null) diagnosticOverlay.stop();

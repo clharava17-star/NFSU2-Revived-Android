@@ -1,9 +1,26 @@
 plugins { id 'com.android.application' }
+
+// Production signing is supplied only through private CI/local environment variables.
+// Never store a release keystore or its passwords in this public repository.
+def releaseKeystorePath = System.getenv("NFSU2_RELEASE_KEYSTORE_PATH")
+def releaseStorePassword = System.getenv("NFSU2_RELEASE_STORE_PASSWORD")
+def releaseKeyAlias = System.getenv("NFSU2_RELEASE_KEY_ALIAS")
+def releaseKeyPassword = System.getenv("NFSU2_RELEASE_KEY_PASSWORD")
+def releaseKeystoreFile = releaseKeystorePath ? file(releaseKeystorePath) : null
+def usePrivateReleaseSigning = releaseKeystoreFile != null
+        && releaseKeystoreFile.isFile()
+        && releaseStorePassword
+        && !releaseStorePassword.trim().isEmpty()
+        && releaseKeyAlias
+        && !releaseKeyAlias.trim().isEmpty()
+        && releaseKeyPassword
+        && !releaseKeyPassword.trim().isEmpty()
+
 android {
     namespace 'io.mininxd.nfsu2'
     compileSdk 35
     defaultConfig {
-        applicationId 'io.mininxd.nfsu2'
+        applicationId 'io.mininxd.nfsu2.modmenu'
         minSdk 28
         targetSdk 35
         versionCode 73
@@ -12,17 +29,26 @@ android {
     }
     signingConfigs {
         release {
-            storeFile file('release.jks')
-            storePassword 'nfsu2release'
-            keyAlias 'nfsu2'
-            keyPassword 'nfsu2release'
-            v1SigningEnabled true
-            v2SigningEnabled true
+            if (usePrivateReleaseSigning) {
+                storeFile releaseKeystoreFile
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+                v1SigningEnabled true
+                v2SigningEnabled true
+            }
         }
     }
     buildTypes {
         release {
-            signingConfig signingConfigs.release
+            // CI/test builds stay installable with the generated debug key when no
+            // private release key is configured. Production updates must use a
+            // private key stored in GitHub Actions Secrets.
+            if (usePrivateReleaseSigning) {
+                signingConfig signingConfigs.release
+            } else {
+                signingConfig signingConfigs.debug
+            }
             minifyEnabled false
         }
     }

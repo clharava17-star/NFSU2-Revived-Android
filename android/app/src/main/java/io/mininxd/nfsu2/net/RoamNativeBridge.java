@@ -42,6 +42,24 @@ public final class RoamNativeBridge {
     public static native void nativeRoamHorn(boolean held);
     public static native void nativeSetFrameLimit(int fps);
     public static native int[] nativeGetActionKeys();
+    /**
+     * Read-only 33-field snapshot:
+     * [valid, gameFlow, speedMps, rpm, throttle, signedGear,
+     *  playerPointerValid, carPointerValid, raceState, raceType,
+     *  trackId, careerRaceActive, activeWorldRace, frameHookCount,
+     *  telemetryUpdateCount, guestMemoryReady, guestEspReady,
+     *  flowAddressReadable, playerSlotAddressReadable, raceAddressReadable,
+     *  gameMemorySymbolFound, gameMemoryMapped, guestEspSymbolFound,
+     *  currentCarTypeIndex, activePhysicsIdleRpm, activePhysicsMaxRpm,
+     *  dragShiftThresholdRpm, activeGearShiftUpRpm, perfectShiftRangeRpm,
+     *  forwardGearCount, driveTrainGear, lastShiftBonus, lastShiftRpm].
+     * gameGearEnum: 0 reverse, 1 neutral, 2 first gear, etc.
+     * The last ten values use the current upgraded RidePhysicsInfo and
+     * DriveTrain, including the exact per-gear upper match interval from
+     * ShiftMatch: shiftUp + (1 - gearboxMatchWindow) * gearboxShiftWeights * coefficientE4.
+     */
+
+    public static native float[] nativeGetGameTelemetry();
 
     /**
      * Called from C roam_android.c when the engine wants to transmit a packet.
