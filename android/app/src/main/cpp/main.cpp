@@ -245,6 +245,8 @@ static GamepadInput gamepad;
 static std::mutex gamepadDevicesMutex;
 static std::vector<int32_t> gamepadDevices;
 static std::atomic<bool> gamepadsRemoved{false};
+// Set by the in-game Mod Menu; the host loop reapplies this while it runs.
+static std::atomic<bool> modMenuPaused{false};
 static bool acceptedGamepad(const AInputEvent* event){
     std::lock_guard<std::mutex> lock(gamepadDevicesMutex);
     return std::find(gamepadDevices.begin(),gamepadDevices.end(),AInputEvent_getDeviceId(event))!=gamepadDevices.end();
@@ -309,6 +311,11 @@ static int32_t onInput(android_app*,AInputEvent* event){
 }
 extern "C" JNIEXPORT void JNICALL Java_io_mininxd_nfsu2_GameActivity_nativeKey(JNIEnv*,jclass,jint scan,jboolean down){
     setGuestKey(unsigned(scan),down==JNI_TRUE);
+}
+extern "C" JNIEXPORT void JNICALL Java_io_mininxd_nfsu2_GameActivity_nativeSetModMenuPaused(JNIEnv*,jclass,jboolean paused){
+    const bool value = paused == JNI_TRUE;
+    modMenuPaused.store(value, std::memory_order_relaxed);
+    setGuestPaused(value);
 }
 extern "C" JNIEXPORT jboolean JNICALL Java_io_mininxd_nfsu2_GameActivity_nativeDrivingControls(JNIEnv*,jclass){return guestDrivingControls()?JNI_TRUE:JNI_FALSE;}
 extern "C" JNIEXPORT void JNICALL Java_io_mininxd_nfsu2_GameActivity_nativePointer(JNIEnv*,jclass,jfloat x,jfloat y,jint phase){
@@ -439,7 +446,7 @@ void android_main(android_app* app) {
         try {
             setD3D9HostWindow(app->window);
             if(d3d9RequestsSurface()){host.renderer.stop();acknowledgeD3D9Surface(true);}
-            setGuestPaused(false);
+            setGuestPaused(modMenuPaused.load(std::memory_order_relaxed));
             if(!customVulkanError.empty())throw std::runtime_error(customVulkanError);
             if (!host.renderer.device&&!d3d9RequestsSurface()&&!(customVulkanDriver&&host.guestAttempted)) {
                 checkGameData();
