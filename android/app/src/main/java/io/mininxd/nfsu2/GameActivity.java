@@ -201,7 +201,6 @@ public final class GameActivity extends NativeActivity {
         final int armedTrack = config.autoShiftTrackId;
         final int armedRaceType = config.autoShiftRaceType;
         final int shiftScan = keyShiftUp > 0 ? keyShiftUp : 0x2a;
-        final float shiftRangeFraction = 0.90f;
         final Handler handler = new Handler(Looper.getMainLooper());
         final int[] pendingGear = {-1};
         final long[] pendingSince = {0L};
@@ -221,7 +220,7 @@ public final class GameActivity extends NativeActivity {
             }
             try {
                 float[] sample = io.mininxd.nfsu2.net.RoamNativeBridge.nativeGetGameTelemetry();
-                boolean matchingEvent = sample != null && sample.length >= 26
+                boolean matchingEvent = sample != null && sample.length >= 27
                         && sample[0] > 0.5f
                         && Math.round(sample[1]) == 6
                         && Math.round(sample[8]) == 4
@@ -232,10 +231,14 @@ public final class GameActivity extends NativeActivity {
                 int carType = matchingEvent ? Math.round(sample[23]) : -1;
                 float idleRpm = matchingEvent ? sample[24] : -1.0f;
                 float maxRpm = matchingEvent ? sample[25] : -1.0f;
+                float dragShiftRpm = matchingEvent ? sample[26] : -1.0f;
                 boolean validEngineRange = carType >= 0
                         && Float.isFinite(idleRpm) && Float.isFinite(maxRpm)
+                        && Float.isFinite(dragShiftRpm)
                         && idleRpm >= 300.0f && maxRpm >= idleRpm + 1000.0f
-                        && maxRpm <= 20000.0f;
+                        && maxRpm <= 22000.0f
+                        && dragShiftRpm > idleRpm + 500.0f
+                        && dragShiftRpm < maxRpm;
 
                 if (!matchingEvent || !validEngineRange) {
                     pendingGear[0] = -1;
@@ -250,9 +253,9 @@ public final class GameActivity extends NativeActivity {
                     float throttle = sample[4];
                     long now = android.os.SystemClock.elapsedRealtime();
 
-                    // Read the active vehicle's own CarTypeInfo range every poll.
-                    // A car switch automatically resets shift confirmation and picks
-                    // up the new car's RPM range; no manual per-car calibration exists.
+                    // Read the active vehicle's tuned Drag physics threshold every poll.
+                    // The native side resolves RideInfo -> RidePhysicsInfo -> active CPI;
+                    // a car/upgrade/mode change therefore selects the correct new value.
                     if (observedCarType[0] != carType) {
                         pendingGear[0] = -1;
                         waitForRpmDrop[0] = false;
@@ -263,7 +266,7 @@ public final class GameActivity extends NativeActivity {
                         lastShiftAt[0] = now;
                     }
 
-                    float targetRpm = idleRpm + (maxRpm - idleRpm) * shiftRangeFraction;
+                    float targetRpm = dragShiftRpm;
                     boolean accelerating = throttle >= 0.25f && throttle <= 1.5f
                             && rpm > 0.0f && gear >= 1 && gear < 6;
 
@@ -743,7 +746,7 @@ public final class GameActivity extends NativeActivity {
                         return;
                     }
                     float[] t = io.mininxd.nfsu2.net.RoamNativeBridge.nativeGetGameTelemetry();
-                    if (t == null || t.length < 26) {
+                    if (t == null || t.length < 27) {
                         telemetryText.setText("Telemetry snapshot unavailable or bridge is outdated. Reinstall the latest Mod Edition build.");
                         return;
                     }
@@ -792,10 +795,11 @@ public final class GameActivity extends NativeActivity {
                             : String.format(java.util.Locale.US, "%.0f%%", t[4] * 100.0f);
                     String raceLabel = t[12] > 0.5f ? "RACE ACTIVE" : "not in active race";
                     String engineLabel = t[23] >= 0.0f && t[25] > t[24] + 1000.0f
+                            && t[26] > t[24] + 500.0f && t[26] < t[25]
                             ? String.format(java.util.Locale.US,
-                                    "Car type %d | idle %.0f RPM | redline %.0f RPM | Auto Shift point %.0f RPM",
-                                    Math.round(t[23]), t[24], t[25], t[24] + (t[25] - t[24]) * 0.90f)
-                            : "Current car engine range unavailable | Auto Shift will stay idle";
+                                    "Car type %d | active idle %.0f | max %.0f RPM | Drag shift threshold %.0f RPM",
+                                    Math.round(t[23]), t[24], t[25], t[26])
+                            : "Active tuned Drag engine data unavailable | Auto Shift will stay idle";
                     String diagnostics = t.length >= 23
                             ? String.format(java.util.Locale.US,
                                     "\nFrame hooks %d | JNI reads %d | base symbol %s"
@@ -819,7 +823,7 @@ public final class GameActivity extends NativeActivity {
             form.addView(readTelemetryButton);
 
             TextView autoShiftInfo = new TextView(this);
-            autoShiftInfo.setText("Universal Auto Shift: the game reads the current car's own engine idle/max RPM and calculates the shift point automatically. No per-car setup or manual calibration is required.");
+            autoShiftInfo.setText("Universal Auto Shift: reads the current car's tuned Drag physics (including installed parts) and uses its own redline-based shift threshold. No per-car setup or manual calibration is required.");
             autoShiftInfo.setTextSize(12);
             autoShiftInfo.setPadding(0, dp(8), 0, dp(4));
             form.addView(autoShiftInfo);
@@ -838,11 +842,11 @@ public final class GameActivity extends NativeActivity {
             if (activeEventAtOpen[0]) {
                 autoShiftScope.setText("Active event detected: race type " + eventTypeAtOpen[0]
                         + " | track " + eventTrackAtOpen[0]
-                        + ". Saving Auto Shift arms this Drag event; the car's RPM range is detected automatically.");
+                        + ". Saving Auto Shift arms this Drag event; the car's tuned Drag shift threshold is detected automatically.");
             } else if (settings.autoShiftTrackId >= 0) {
                 autoShiftScope.setText("Auto Shift is armed for race type " + settings.autoShiftRaceType
                         + " | track " + settings.autoShiftTrackId
-                        + ". Open MOD while driving in a Drag event to arm a different event. Vehicle RPM is detected automatically.");
+                        + ". Open MOD while driving in a Drag event to arm a different event. the tuned Drag threshold is detected automatically.");
             } else {
                 autoShiftScope.setText("To arm Auto Shift: start a Drag race, wait until the car is driving, then open MOD and save with Auto Shift ON.");
             }
@@ -874,7 +878,7 @@ public final class GameActivity extends NativeActivity {
             form.addView(filePath);
 
             TextView safety = new TextView(this);
-            safety.setText("Auto Shift reads the active car's own engine RPM range and calculates its shift point automatically (about 90% of that range). It works across vehicle changes without per-car calibration. It only sends Shift-Up in the armed Drag event and does not modify Career data.");
+            safety.setText("Auto Shift reads the active car's tuned physics threshold from RidePhysicsInfo and uses the Drag model's redline threshold (active CPI +0x1F4 minus 100 RPM). It updates when the car or installed physics changes. It only sends Shift-Up in the armed Drag event and does not modify Career data.");
             safety.setTextSize(12);
             safety.setPadding(0, dp(8), 0, 0);
             form.addView(safety);
