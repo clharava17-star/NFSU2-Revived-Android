@@ -17,7 +17,7 @@ The active range is `R = PerfectShiftMaxRPMDiff[perfType*9 + gear] * perfectRang
 
 `shiftUp[gear] < RPM < shiftUp[gear] + 0.05 * R`
 
-The controller aims at the middle of this narrow interval, `shiftUp + 0.025 * R`, and estimates the RPM at the next game physics frame from the observed frame-to-frame RPM rise. It polls telemetry every 4 ms, tracks actual RPM changes rather than assuming each poll is a new physics frame, and sends a short Shift-Up pulse only when the current/next-frame estimate enters the Perfect window. It verifies the gear increase before re-arming for the next gear. The controller also reads the current forward gear count and does not request an upshift from the final gear.
+The controller polls telemetry every 4 ms and sends a short Shift-Up pulse only when the current sampled RPM is strictly inside the game's Perfect interval. It does not predict ahead of the window: the input must be requested while the value consumed by the game's next gear-selection pass is already in the valid range. It verifies that the DriveTrain gear actually increased before re-arming. The controller reads the current forward gear count and never requests an upshift from the final gear.
 
 The JNI snapshot now has 33 fields. Fields [27–30] carry the active gear's shiftUp RPM, RateShift range R, forward gear count and current DriveTrain gear. Fields [31–32] expose the game's last shift bonus and RPM-at-shift for diagnostics. The Mod Menu's Read Live Telemetry displays the per-gear window and last recorded bonus.
 
@@ -48,9 +48,9 @@ The NFSU2 physics reverse-engineering reference documents `RideInfo+0x10 = RideP
 - `CPI + 0x1F4`: active redline/shift RPM
 - `CPI + 0x1F8`: active maximum RPM
 
-The NFSU2 drag simulation model uses `CPI+0x1F4 - 100 RPM` as its gear shift threshold. The companion now reads this *live tuned CPI* value with guarded memory checks and publishes it as telemetry field [26]. It also reports active idle/max RPM in fields [24–25]. Auto Shift now predicts the next 16 ms sample and sends Shift-Up as the live RPM approaches/crosses this per-car threshold. It resets its pending state when the car type changes and fails closed when the active CPI cannot be read safely.
+Historical interim implementation (superseded): the companion briefly used `CPI+0x1F4 - 100 RPM` as a generic Drag threshold. The current controller no longer triggers from field [26]; it uses the active DriveTrain `shiftUp[gear]` and `RateShift` range fields [27–30].
 
-This is a materially better shift target than a generic 90% of base engine range and should reduce premature Short Shift results. It is still not proof that the game's brief green Perfect Shift window is exactly identical to this dyno-model threshold. The next device test must check the game's own result text/color (Short / Good / Perfect / OverRev) across several cars and installed setups. Do not claim guaranteed Perfect Shift until those tests pass.
+The active CPI redline threshold was an interim improvement only. The current source-based implementation reads the documented RateShift Perfect interval. The next device test must still check the game's own result text/color (Short / Good / Perfect / OverRev) across several cars and installed setups. Do not claim guaranteed Perfect Shift until those tests pass.
 
 ---
 
@@ -80,7 +80,7 @@ The Java controller derives the target from the currently sampled vehicle on eve
 
 The earlier 90% engine-range fraction was too early in the user's video and has been superseded by the live tuned Drag CPI threshold described at the top of this file.
 
-The existing one-sample RPM-rise prediction, throttle validation, forward-gear validation, exact armed-event check, Shift-Up key pulse, gear-change confirmation, and fail-closed behavior remain in place. If the current car's engine range cannot be read safely, Auto Shift does not issue a shift input.
+The exact-window controller requires valid active DriveTrain data, throttle, a non-final forward gear, the exact armed-event IDs, and a confirmed gear-change. If the active per-gear shift point or Perfect range cannot be read safely, Auto Shift does not issue a shift input.
 
 ## User-facing behavior
 
@@ -301,7 +301,7 @@ These findings are from symbol metadata and strings only. They do not establish 
 
 ### Consequence for NFSU2
 
-The reference suggests a better long-term shape for Auto Shift: evaluate a validated shift condition from the game execution/frame context, then submit a shift-up input through the port's existing input path. NFSU2's current build is an x86 guest executable running inside the Android recompiler; its own guest addresses and state must be mapped independently. The current Java controller remains an experimental RPM-triggered implementation using the active tuned CPI shift threshold until its timing is verified in the actual Drag event. The reference APK does not prove that the NFSU2 green Perfect Shift window is mapped.
+The reference suggests a better long-term shape for Auto Shift: evaluate a validated shift condition from the game execution/frame context, then submit a shift-up input through the port's existing input path. NFSU2's current build is an x86 guest executable running inside the Android recompiler; its own guest addresses and state must be mapped independently. The current Java controller uses the active per-gear RateShift Perfect interval, but its on-device timing remains unverified. The reference APK does not prove that the NFSU2 green Perfect Shift window is mapped.
 
 The reference's pause symbols are not needed for the already-working NFSU2 MOD pause/resume path. Keep the existing guest pause/input path unchanged.
 
