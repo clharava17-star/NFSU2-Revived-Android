@@ -721,10 +721,18 @@ public final class GameActivity extends NativeActivity {
                     String playerPointer = t[6] > 0.5f ? "OK" : "missing";
                     String carPointer = t[7] > 0.5f ? "OK" : "missing";
                     if (t[0] < 0.5f) {
+                        String diagnostics = t.length >= 17
+                                ? String.format(java.util.Locale.US,
+                                        "\\nFrame hooks %d | snapshots %d | memory %s | guest ESP %s",
+                                        Math.round(t[13]), Math.round(t[14]),
+                                        t[15] > 0.5f ? "ready" : "missing",
+                                        t[16] > 0.5f ? "ready" : "idle")
+                                : "\\nNative diagnostics unavailable.";
                         telemetryText.setText(String.format(java.util.Locale.US,
-                                "No valid car snapshot | Flow %d | Player* %s | Car* %s | Race state %s | Type %d | Track %d",
+                                "No valid car snapshot | Flow %d | Player* %s | Car* %s | Race state %s | Type %d | Track %d%s",
                                 flow, playerPointer, carPointer,
-                                raceState < 0 ? "n/a" : String.valueOf(raceState), raceType, track));
+                                raceState < 0 ? "n/a" : String.valueOf(raceState), raceType, track,
+                                diagnostics));
                         return;
                     }
                     int rawGear = Math.round(t[5]);
@@ -733,11 +741,18 @@ public final class GameActivity extends NativeActivity {
                             ? "n/a"
                             : String.format(java.util.Locale.US, "%.0f%%", t[4] * 100.0f);
                     String raceLabel = t[12] > 0.5f ? "RACE ACTIVE" : "not in active race";
+                    String diagnostics = t.length >= 17
+                            ? String.format(java.util.Locale.US,
+                                    "\\nFrame hooks %d | snapshots %d | memory %s | guest ESP %s",
+                                    Math.round(t[13]), Math.round(t[14]),
+                                    t[15] > 0.5f ? "ready" : "missing",
+                                    t[16] > 0.5f ? "ready" : "idle")
+                            : "";
                     telemetryText.setText(String.format(java.util.Locale.US,
-                            "Live: %.0f RPM | Gear %s | %.0f km/h | Throttle %s\nFlow %d | Race state %s | Type %d | Track %d | %s",
+                            "Live: %.0f RPM | Gear %s | %.0f km/h | Throttle %s\nFlow %d | Race state %s | Type %d | Track %d | %s%s",
                             t[3], gearLabel, t[2] * 3.6f, throttle,
                             flow, raceState < 0 ? "n/a" : String.valueOf(raceState),
-                            raceType, track, raceLabel));
+                            raceType, track, raceLabel, diagnostics));
                 } catch (Throwable error) {
                     telemetryText.setText("Telemetry read failed: " + error.getClass().getSimpleName());
                 }
@@ -1116,28 +1131,39 @@ public final class GameActivity extends NativeActivity {
                 settings.autoPerfectShift = autoShift.isChecked();
                 settings.autoShiftRpm = ModMenuConfig.MIN_SHIFT_RPM + rpm.getProgress();
                 if (settings.autoPerfectShift && !settings.master) {
-                    Toast.makeText(this, "Enable Master Cheat to run Auto Shift.", Toast.LENGTH_LONG).show();
-                    return;
+                    // Auto Shift requires Master; persist both switches consistently.
+                    settings.master = true;
+                    master.setChecked(true);
                 }
+                boolean autoShiftArmed = false;
                 if (!settings.autoPerfectShift) {
                     settings.autoShiftTrackId = -1;
                     settings.autoShiftRaceType = -1;
                 } else if (activeEventAtOpen) {
                     settings.autoShiftTrackId = eventTrackAtOpen;
                     settings.autoShiftRaceType = eventTypeAtOpen;
-                } else if (settings.autoShiftTrackId < 0 || settings.autoShiftRaceType < 0) {
-                    Toast.makeText(this,
-                            "Start and drive in the intended Drag event, then open MOD to arm Auto Shift.",
-                            Toast.LENGTH_LONG).show();
-                    return;
+                    autoShiftArmed = true;
+                } else {
+                    // Preserve the ON preference even when telemetry cannot identify an event.
+                    // No event ID means the controller remains fail-closed and cannot shift.
+                    autoShiftArmed = settings.autoShiftTrackId >= 0 && settings.autoShiftRaceType >= 0;
                 }
                 settings.infiniteNos = infiniteNos.isChecked();
                 settings.raceAssist = raceAssist.isChecked();
                 settings.perfectDrift = perfectDrift.isChecked();
                 if (ModMenuConfig.save(this, settings)) {
-                    Toast.makeText(this, settings.autoPerfectShift
-                            ? "Settings saved. Experimental Auto Shift armed for this event at " + settings.autoShiftRpm + " RPM."
-                            : "Mod Menu settings saved. Gameplay cheats remain off.", Toast.LENGTH_LONG).show();
+                    String savedMessage;
+                    if (!settings.autoPerfectShift) {
+                        savedMessage = "Mod Menu settings saved. Gameplay cheats remain off.";
+                    } else if (autoShiftArmed && activeEventAtOpen) {
+                        savedMessage = "Settings saved. Experimental Auto Shift armed for this event at "
+                                + settings.autoShiftRpm + " RPM.";
+                    } else if (autoShiftArmed) {
+                        savedMessage = "Settings saved. Auto Shift preference remains ON and scoped to its saved event.";
+                    } else {
+                        savedMessage = "Settings saved. Auto Shift preference is ON, but not armed yet because live event telemetry is unavailable.";
+                    }
+                    Toast.makeText(this, savedMessage, Toast.LENGTH_LONG).show();
                     dialog.dismiss();
                 } else {
                     showModMenuStorageAccessDialog();
