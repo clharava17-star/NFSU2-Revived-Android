@@ -165,8 +165,12 @@ public final class GameActivity extends NativeActivity {
         com.nfsu2.androidevolved.GameActivity.nativeKey(scan, down);
         try { nativeKeyNav(scan, down); } catch (Throwable ignored) {}
     }
+    // Reuse the same Escape scan code as the existing HUD Pause control.
+    private void pulseGamePauseKey() {
+        nativeKey(0x01, true);
+        new Handler(Looper.getMainLooper()).postDelayed(() -> nativeKey(0x01, false), 140);
+    }
     private static native void nativeKeyNav(int scan, boolean down);
-    private static native void nativeSetModMenuPaused(boolean paused);
     private static boolean nativeDrivingControls() { return com.nfsu2.androidevolved.GameActivity.nativeDrivingControls(); }
     private static boolean nativeGamepadUsed() { return com.nfsu2.androidevolved.GameActivity.nativeGamepadUsed(); }
     private static void nativeTypeText(String value, boolean replace) { com.nfsu2.androidevolved.GameActivity.nativeTypeText(value, replace); }
@@ -554,8 +558,8 @@ public final class GameActivity extends NativeActivity {
             return;
         }
         runOnUiThread(() -> {
-            // Freeze the guest simulation while the settings panel is open.
-            nativeSetModMenuPaused(true);
+            // Use the existing HUD Pause/Escape input so the built-in game state handles pause.
+            pulseGamePauseKey();
             ModMenuConfig.Settings settings = ModMenuConfig.load(this);
             LinearLayout form = new LinearLayout(this);
             form.setOrientation(LinearLayout.VERTICAL);
@@ -909,8 +913,8 @@ public final class GameActivity extends NativeActivity {
             });
             dialog.setOnDismissListener(ignored -> {
                 if (!calibrationRunning[0]) calibrationHandler.removeCallbacks(calibrationPoll[0]);
-                // Resume the game for Close, Save, All OFF, Back, or calibration start.
-                nativeSetModMenuPaused(false);
+                // Toggle the same in-game Pause/Escape action to resume gameplay.
+                pulseGamePauseKey();
             });
             allOffButton.setOnClickListener(button -> {
                 ModMenuConfig.Settings disabled = new ModMenuConfig.Settings();
