@@ -1,3 +1,19 @@
+## Exact Drag shift-match window — correction
+
+The 33-field telemetry reads the active per-gear `DriveTrain::shiftUp` value and its gear/class-specific shift weight. The earlier implementation incorrectly approximated the upper Perfect Shift interval as 5% of the raw range. That constant was not supported by the recovered function and could produce the Over Rev / Short Shift outcomes shown in the device test video.
+
+The recovered NFSU2 PC v1.2 `ShiftMatch` routine (original `0x594F20`) uses:
+- `distance = shiftUp[gear] - engineRPM`
+- `window = gearboxShiftWeights[driveTrain.indexF0 * 9 + gear] * driveTrain.coefficientE4`
+- For RPM above the shift point, it returns the maximum match value `1.0` only while `(1 - gearboxMatchWindow) * window > (RPM - shiftUp)`; otherwise it returns `-1.0` (overrun).
+- `gearboxMatchWindow` is the live guest float at `0x007FBF5C`.
+
+The native reader now samples that global and publishes `perfectShiftRangeRpm = (1 - gearboxMatchWindow) * window` in telemetry field [28]. Java uses the exact interval `shiftUp < RPM < shiftUp + perfectShiftRangeRpm`; the unsupported extra `0.05` factor was removed. If the global is unreadable or outside the expected (0,1) range, the window remains invalid and Auto Shift fails closed.
+
+Read Live Telemetry now displays the actual boundary calculated by the native code. This is a source-derived maximum-match window, not yet a device-proven guarantee that the game's visible green result label is identical in every event variant. The device acceptance test must confirm that the result changes to Perfect, not Short Shift / Over Rev, across multiple cars.
+
+---
+
 ## Exact per-gear Perfect Shift window — current Auto Shift implementation
 
 The user's video showed **Over Rev!** and **Short Shift!** with the earlier generic threshold. That threshold was not close enough to the game's Perfect Shift scoring rule. The current controller uses the game's own per-gear shift point and the same `RateShift` formula documented from the NFSU2 physics implementation.
