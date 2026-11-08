@@ -160,7 +160,7 @@ int roam_android_init_symbols(void) {
  * walks pointers while the guest simulation is updating them.
  */
 static pthread_mutex_t g_mod_telemetry_mu = PTHREAD_MUTEX_INITIALIZER;
-static jfloat g_mod_telemetry[23] = {0, 0, 0, 0, -1, -99, 0, 0, -1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+static jfloat g_mod_telemetry[26] = {0, 0, 0, 0, -1, -99, 0, 0, -1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1, -1, -1};
 static _Atomic uint32_t g_mod_frame_ticks = 0;
 static _Atomic uint32_t g_mod_snapshot_updates = 0;
 static _Atomic int g_mod_memory_ready = 0;
@@ -172,20 +172,24 @@ static _Atomic int g_mod_stack_ready = 0;
  * [9] race type, [10] track ID, [11] career race active, [12] in-world race (flow=6 and race state=4),
  * [13] frame-hook count, [14] telemetry-update count, [15] guest memory ready, [16] guest ESP ready,
  * [17] flow address readable, [18] player-slot address readable, [19] race address readable,
- * [20] g_mem_base symbol found, [21] game memory image mapped, [22] g_esp symbol found.
+ * [20] g_mem_base symbol found, [21] game memory image mapped, [22] g_esp symbol found,
+ * [23] player CarTypeInfo index, [24] that car type's idle RPM, [25] that car type's maximum/most RPM.
  *
- * Game addresses and car field offsets match the v1.2 NA port definitions in roam_game.c.
+ * CarTypeInfo is resolved from the live car object's +0x0C pointer using the same
+ * G_CARTYPES table and 0x890-byte stride documented in roam_game.c. Engine idle/max
+ * RPM are the per-vehicle fields at CarTypeInfo +0x300/+0x308. This lets Auto Shift
+ * adapt to any selected car instead of storing one manually calibrated RPM per car.
  * Gear and throttle deliberately use the same fields as local_state() in roam_game.c.
  */
 
-static void mod_telemetry_publish(const jfloat values[23]) {
+static void mod_telemetry_publish(const jfloat values[26]) {
     pthread_mutex_lock(&g_mod_telemetry_mu);
     memcpy(g_mod_telemetry, values, sizeof(g_mod_telemetry));
     pthread_mutex_unlock(&g_mod_telemetry_mu);
 }
 
 static void mod_telemetry_update(void) {
-    jfloat next[23] = {0, 0, 0, 0, -1.0f, -99.0f, 0, 0, -1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    jfloat next[26] = {0, 0, 0, 0, -1.0f, -99.0f, 0, 0, -1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1.0f, -1.0f, -1.0f};
     next[13] = (jfloat)atomic_load(&g_mod_frame_ticks);
     next[14] = (jfloat)(atomic_fetch_add(&g_mod_snapshot_updates, 1) + 1);
     next[15] = atomic_load(&g_mod_memory_ready) ? 1.0f : 0.0f;
@@ -243,6 +247,34 @@ static void mod_telemetry_update(void) {
     const float rpm = MRF32(car + 0x440u);
     const int gear = (int8_t)MR32(car + 0x434u); /* same field as roam_game.c local_state() */
 
+    /* Resolve the current vehicle's own engine range. CarTypeInfo is reached
+       through Car +0x0C; table/stride/offsets match roam_game.c. No car names,
+       save slots or manual per-car calibration are involved. */
+    const uint32_t car_types_va = 0x008A1CCCu; /* G_CARTYPES */
+    const uint32_t car_type_stride = 0x890u;
+    if (car <= 0xFFFFFFF3u
+            && rh_mem_committed(car + 0x0Cu, 4)
+            && rh_mem_committed(car_types_va, 4)) {
+        const uint32_t car_types = MR32(car_types_va);
+        const uint32_t type_info = MR32(car + 0x0Cu);
+        if (car_types && type_info >= car_types
+                && ((type_info - car_types) % car_type_stride) == 0u) {
+            const uint32_t type_index = (type_info - car_types) / car_type_stride;
+            if (type_index < 512u && type_info <= 0xFFFFFCF3u
+                    && rh_mem_committed(type_info + 0x300u, 12u)) {
+                const float idle_rpm = MRF32(type_info + 0x300u);
+                const float max_rpm = MRF32(type_info + 0x308u);
+                if (isfinite(idle_rpm) && isfinite(max_rpm)
+                        && idle_rpm >= 300.0f && idle_rpm <= 4000.0f
+                        && max_rpm >= idle_rpm + 1000.0f && max_rpm <= 20000.0f) {
+                    next[23] = (jfloat)type_index;
+                    next[24] = idle_rpm;
+                    next[25] = max_rpm;
+                }
+            }
+        }
+    }
+
     float throttle = -1.0f;
     if (car <= 0xFFFFFFCBu && rh_mem_committed(car + 0x30u, 4)) {
         const uint32_t controller = MR32(car + 0x30u);
@@ -281,13 +313,13 @@ static void mod_telemetry_refresh(void) {
 }
 
 static jfloatArray mod_telemetry_array(JNIEnv *env) {
-    jfloat snapshot[23];
+    jfloat snapshot[26];
     pthread_mutex_lock(&g_mod_telemetry_mu);
     memcpy(snapshot, g_mod_telemetry, sizeof(snapshot));
     pthread_mutex_unlock(&g_mod_telemetry_mu);
 
-    jfloatArray result = (*env)->NewFloatArray(env, 23);
-    if (result) (*env)->SetFloatArrayRegion(env, result, 0, 23, snapshot);
+    jfloatArray result = (*env)->NewFloatArray(env, 26);
+    if (result) (*env)->SetFloatArrayRegion(env, result, 0, 26, snapshot);
     return result;
 }
 
