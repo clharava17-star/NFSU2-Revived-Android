@@ -8,7 +8,7 @@ The recovered NFSU2 PC v1.2 `ShiftMatch` routine (original `0x594F20`) uses:
 - For RPM above the shift point, it returns the maximum match value `1.0` only while `(1 - gearboxMatchWindow) * window > (RPM - shiftUp)`; otherwise it returns `-1.0` (overrun).
 - `gearboxMatchWindow` is the live guest float at `0x007FBF5C`.
 
-The native reader now samples that global and publishes `perfectShiftRangeRpm = (1 - gearboxMatchWindow) * window` in telemetry field [28]. Java uses the exact interval `shiftUp < RPM < shiftUp + perfectShiftRangeRpm`; the unsupported extra `0.05` factor was removed. If the global is unreadable or outside the expected (0,1) range, the window remains invalid and Auto Shift fails closed.
+The game uses a 4×9 `gearboxShiftWeights` table (indices 0–35); the fourth tuning class is valid, so the reader now accepts all four classes while guarding the final table element. The native reader samples that global and publishes `perfectShiftRangeRpm = (1 - gearboxMatchWindow) * window` in telemetry field [28]. Java uses the exact interval `shiftUp < RPM < shiftUp + perfectShiftRangeRpm`; the unsupported extra `0.05` factor was removed. If the global is unreadable or outside the expected (0,1) range, the window remains invalid and Auto Shift fails closed.
 
 Read Live Telemetry now displays the actual boundary calculated by the native code. This is a source-derived maximum-match window, not yet a device-proven guarantee that the game's visible green result label is identical in every event variant. The device acceptance test must confirm that the result changes to Perfect, not Short Shift / Over Rev, across multiple cars.
 
