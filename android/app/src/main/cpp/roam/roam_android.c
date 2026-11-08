@@ -157,7 +157,8 @@ static _Atomic int g_mod_stack_ready = 0;
  * [0] snapshot valid, [1] GameFlow state, [2] speed m/s, [3] RPM,
  * [4] throttle (-1 if controller unavailable), [5] signed gear (-1 reverse, 0 neutral, 1 first...),
  * [6] Player* readable, [7] Car* readable, [8] race coordinator state,
- * [9] race type, [10] track ID, [11] career race active, [12] in-world race (flow=6 and race state=4).
+ * [9] race type, [10] track ID, [11] career race active, [12] in-world race (flow=6 and race state=4),
+ * [13] frame-hook count, [14] telemetry-update count, [15] guest memory ready, [16] guest ESP ready.
  *
  * Game addresses and car field offsets match the v1.2 NA port definitions in roam_game.c.
  * Gear and throttle deliberately use the same fields as local_state() in roam_game.c.
