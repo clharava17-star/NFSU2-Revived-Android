@@ -1,3 +1,11 @@
+## Auto Shift — calibrated timing and one-sample RPM prediction
+
+The Drag Auto Shift controller now uses the calibrated manual-shift peak as its shift point and estimates the RPM at the next 16 ms polling sample from the measured RPM rise. It can trigger on the first sample that reaches the learned target, or one poll earlier when RPM is already at least 90% of target and the one-sample prediction crosses it. Prediction is capped at +500 RPM to avoid a noisy sample causing a premature shift.
+
+The controller is deliberately fail-closed: it requires a valid active snapshot for the exact armed event, a forward gear below sixth, a valid throttle reading above 25%, and a positive RPM value. An unavailable throttle value is not treated as acceleration. After sending Shift-Up it waits for a confirmed gear increase; it will not repeatedly send the key if the game does not accept the shift. The RPM-drop hysteresis re-arms the next gear after the shift.
+
+A calibration bug was also fixed: first gear no longer resets its peak on every sample. Calibration now accumulates the highest RPM while each gear is engaged, records that peak when an upshift is observed, and samples every 20 ms instead of every 50 ms. This improves the learned shift point without claiming that the game’s exact green Perfect Shift judgement has been reverse-engineered.
+
 # NFSU2 Revived Mod Menu — implementation notes
 
 Target base: current `main` branch (v0.15.17 at the time of audit).
