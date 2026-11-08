@@ -723,7 +723,7 @@ public final class GameActivity extends NativeActivity {
                     if (t[0] < 0.5f) {
                         String diagnostics = t.length >= 20
                                 ? String.format(java.util.Locale.US,
-                                        "\nHooks %d | samples %d | memory %s | ESP %s"
+                                        "\nFrame hooks %d | live samples %d | memory %s | ESP %s"
                                                 + "\nFlow addr %s | Player slot %s | Race addr %s",
                                         Math.round(t[13]), Math.round(t[14]),
                                         t[15] > 0.5f ? "ready" : "missing",
