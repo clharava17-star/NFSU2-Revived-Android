@@ -144,7 +144,24 @@ jobs:
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleRelease --no-daemon
+          # Gradle Wrapper downloads may intermittently receive HTTP 502/504 from
+          # the distribution CDN. Retry transient network failures before failing CI.
+          build_ok=0
+          for attempt in 1 2 3; do
+            echo "Gradle build attempt $attempt/3"
+            if ./gradlew assembleRelease --no-daemon; then
+              build_ok=1
+              break
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "Gradle build attempt failed; retrying after a short delay..."
+              sleep $((attempt * 10))
+            fi
+          done
+          if [ "$build_ok" -ne 1 ]; then
+            echo "Gradle build failed after three attempts."
+            exit 1
+          fi
           mkdir -p ../artifacts
           if [ -f "app/build/outputs/apk/release/app-release.apk" ]; then
             cp app/build/outputs/apk/release/app-release.apk ../artifacts/NFSU2.apk
