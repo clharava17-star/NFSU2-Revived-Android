@@ -361,6 +361,7 @@ void d3dDispatch(){
         // libnfsu2_roam is a direct DT_NEEDED dependency of this library.
         // Call the companion from the same linker namespace; do not rely on
         // class-loader dlopen visibility from NativeActivity.
+        nfs_roam_bind_guest_memory(&g_mem_base, &g_esp);
         nfs_roam_frame_tick();
         serviceGuestSound();
         lastPresentMs=steadyMs();
