@@ -1,3 +1,38 @@
+## Exact per-gear Perfect Shift window — current Auto Shift implementation
+
+The user's video showed **Over Rev!** and **Short Shift!** with the earlier generic threshold. That threshold was not close enough to the game's Perfect Shift scoring rule. The current controller uses the game's own per-gear shift point and the same `RateShift` formula documented from the NFSU2 physics implementation.
+
+### Live drivetrain data read-only
+
+For the player car in physics movement mode:
+- `Car + 0x34` → `PhysicsMover*`
+- `PhysicsMover + 0x4C` → `DriveTrain*`
+- `DriveTrain + 0x84` → `shiftUp[9]`, indexed by game Gear enum (0=R, 1=N, 2=1st…)
+- `DriveTrain + 0xE4` → `perfectRangeMul`
+- `DriveTrain + 0xF0` → `perfType`
+- `PerfectShiftMaxRPMDiff` table at guest VA `0x007FBF60` (3×9 floats)
+- `DriveTrain + 0x68` / `+0x6C` → last shift bonus / RPM used for scoring
+
+The active range is `R = PerfectShiftMaxRPMDiff[perfType*9 + gear] * perfectRangeMul`. The documented `RateShift` rule awards Perfect (`1.0`) only when RPM is above the per-gear `shiftUp[gear]` point by less than 5% of `R`. Thus the green window is:
+
+`shiftUp[gear] < RPM < shiftUp[gear] + 0.05 * R`
+
+The controller aims at the middle of this narrow interval, `shiftUp + 0.025 * R`, and estimates the RPM at the next game physics frame from the observed frame-to-frame RPM rise. It polls telemetry every 4 ms, tracks actual RPM changes rather than assuming each poll is a new physics frame, and sends a short Shift-Up pulse only when the current/next-frame estimate enters the Perfect window. It verifies the gear increase before re-arming for the next gear. The controller also reads the current forward gear count and does not request an upshift from the final gear.
+
+The JNI snapshot now has 33 fields. Fields [27–30] carry the active gear's shiftUp RPM, RateShift range R, forward gear count and current DriveTrain gear. Fields [31–32] expose the game's last shift bonus and RPM-at-shift for diagnostics. The Mod Menu's Read Live Telemetry displays the per-gear window and last recorded bonus.
+
+These are read-only reads from the active DriveTrain. The companion does not write game physics, shift points, career data, or scoring values. If the player car is not in physics mode, the DriveTrain pointer is unavailable, the per-gear range is zero, or telemetry/event checks fail, Auto Shift remains idle.
+
+### Why this should correct the video result
+
+The earlier RPM trigger used a broad base-engine threshold and could request a shift before the gear's Perfect interval, which matches the user's **Short Shift!** result. The new trigger uses the exact per-gear shift point and Perfect range used by `RateShift`, including the current vehicle's tuned drivetrain and drag difficulty multiplier. It also aims inside the scoring interval rather than at the redline.
+
+The physics reverse-engineering notes identify the scoring fields as `shiftBonus` and `rpmAtShift`; a Perfect result is recorded as 1.0. The new telemetry exposes those fields so device testing can verify the game's own score instead of relying only on the gauge.
+
+This is a source-based implementation of the documented RateShift rule, but a successful build is not yet proof that an Android game session will always score Perfect. On-device validation is required, and timing may still need adjustment for frame pacing or input latency.
+
+---
+
 ## Perfect Shift timing correction — use the active Drag physics threshold
 
 The user's supplied Drag video shows the game reporting **Short Shift!** after an automatic upshift. The previous build's 90% fraction of the base/vehicle RPM range was too early for this car's active setup. That 90% formula is superseded and is no longer used by the controller.
@@ -201,7 +236,7 @@ The drag shift judgement itself is not yet fully mapped in this Android build. T
 
 The Android controller uses the mapped Shift Up scan code and read-only telemetry. It is armed for a saved event type/track, but it is not tied to a vehicle name or vehicle-specific RPM setting. The active vehicle's tuned Drag physics block is read dynamically and the target is recalculated when the physics/car changes. The controller requires the same active event, a readable tuned CPI threshold, a valid forward gear, positive RPM, and real throttle input. It emits a short Shift-Up pulse only at the dynamic shift point, then waits for a confirmed gear increase or timeout and RPM-drop hysteresis before another pulse. It stops on pause/background, menu open, or Activity destruction.
 
-This is an RPM-triggered upshift using the active car's tuned Drag redline threshold. It is not yet a verified NFSU2 Perfect Shift implementation. The exact green judgement window and timing still require on-device validation. Infinite NOS, Race Assist, and Perfect Drift remain out of scope.
+This is an RPM-triggered upshift targeting the documented RateShift Perfect interval from the active DriveTrain. The exact Android input timing still requires on-device validation. Infinite NOS, Race Assist, and Perfect Drift remain out of scope.
 
 ## Historical calibration HUD issue (superseded)
 
