@@ -723,11 +723,11 @@ public final class GameActivity extends NativeActivity {
                     if (t[0] < 0.5f) {
                         String diagnostics = t.length >= 17
                                 ? String.format(java.util.Locale.US,
-                                        "\\nFrame hooks %d | snapshots %d | memory %s | guest ESP %s",
+                                        "\nFrame hooks %d | snapshots %d | memory %s | guest ESP %s",
                                         Math.round(t[13]), Math.round(t[14]),
                                         t[15] > 0.5f ? "ready" : "missing",
                                         t[16] > 0.5f ? "ready" : "idle")
-                                : "\\nNative diagnostics unavailable.";
+                                : "\nNative diagnostics unavailable.";
                         telemetryText.setText(String.format(java.util.Locale.US,
                                 "No valid car snapshot | Flow %d | Player* %s | Car* %s | Race state %s | Type %d | Track %d%s",
                                 flow, playerPointer, carPointer,
@@ -743,7 +743,7 @@ public final class GameActivity extends NativeActivity {
                     String raceLabel = t[12] > 0.5f ? "RACE ACTIVE" : "not in active race";
                     String diagnostics = t.length >= 17
                             ? String.format(java.util.Locale.US,
-                                    "\\nFrame hooks %d | snapshots %d | memory %s | guest ESP %s",
+                                    "\nFrame hooks %d | snapshots %d | memory %s | guest ESP %s",
                                     Math.round(t[13]), Math.round(t[14]),
                                     t[15] > 0.5f ? "ready" : "missing",
                                     t[16] > 0.5f ? "ready" : "idle")
