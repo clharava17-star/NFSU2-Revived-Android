@@ -303,15 +303,17 @@ static void mod_telemetry_update(void) {
     }
 
     /* Read the game's exact per-gear shift-up point and Perfect Shift range.
-       Car +0x28 must be movement mode 1 (PhysicsMover); Car +0x34 -> mover,
-       mover +0x4C -> DriveTrain. The shiftUp array uses Gear enum 0=R,1=N,2=1st. */
-    if (MR32(car + 0x28u) == 1u && rh_mem_committed(car + 0x34u, 4)) {
+       Car +0x34 -> PhysicsMover (vtbl 0x7A25E0), mover +0x4C -> DriveTrain
+       (vtbl 0x7A2508). The shiftUp array uses Gear enum 0=R,1=N,2=1st. */
+    if (rh_mem_committed(car + 0x34u, 4)) {
         const uint32_t mover = MR32(car + 0x34u);
         if (mover && mover <= 0xFFFFFF0Fu && rh_mem_committed(mover, 0x130u)
+                && MR32(mover) == 0x007A25E0u
                 && rh_mem_committed(mover + 0x4Cu, 4)) {
             const uint32_t drive_train = MR32(mover + 0x4Cu);
             if (drive_train && drive_train <= 0xFFFFFF0Bu
-                    && rh_mem_committed(drive_train, 0xF4u)) {
+                    && rh_mem_committed(drive_train, 0xF4u)
+                    && MR32(drive_train) == 0x007A2508u) {
                 const int drive_gear = (int32_t)MR32(drive_train + 0x3Cu);
                 const float shift_up = MRF32(drive_train + 0x84u + 4u * (uint32_t)(drive_gear >= 0 && drive_gear <= 8 ? drive_gear : 0));
                 const float perfect_range_mul = MRF32(drive_train + 0xE4u);
