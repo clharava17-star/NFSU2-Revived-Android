@@ -39,6 +39,7 @@
 #ifdef __ANDROID__
 #include <aaudio/AAudio.h>
 #endif
+extern "C" void nfs_roam_bind_guest_memory(ptrdiff_t* mem_base, uint32_t* esp);
 extern "C" void nfs_roam_frame_tick(void);
 extern "C" {
 #include "recomp_types.h"
