@@ -251,6 +251,45 @@ public final class GameActivity extends NativeActivity {
                     nativeFrameLimit(Integer.parseInt(option.values[which]));dialog.dismiss();
                 }).setNegativeButton("Cancel",null).show();
     }
+    /**
+     * Android 11+ grants all-files access per package. Mod Edition has its own application ID,
+     * so permission granted to the original NFSU2 app does not automatically carry over.
+     */
+    private boolean hasModMenuStorageAccess() {
+        if (Build.VERSION.SDK_INT >= 30) return Environment.isExternalStorageManager();
+        return checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void showModMenuStorageAccessDialog() {
+        String target = ModMenuConfig.file(this).getAbsolutePath();
+        if (Build.VERSION.SDK_INT >= 30 && !hasModMenuStorageAccess()) {
+            new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                    .setTitle("Allow Mod Edition file access")
+                    .setMessage("Android gives this permission separately to each app. The original NFSU2 permission does not automatically apply to Mod Edition. Enable \"Allow access to manage all files\" for NFSU2 Revived Mod Edition, return to the game, then tap Save settings again.\n\nTarget: " + target)
+                    .setPositiveButton("Open access settings", (dialog, which) -> {
+                        try {
+                            startActivity(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                    Uri.parse("package:" + getPackageName())));
+                        } catch (Exception unavailable) {
+                            try {
+                                startActivity(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
+                            } catch (Exception ignored) {
+                                Toast.makeText(this, "Open Android Settings > Apps > Special app access > All files access.", Toast.LENGTH_LONG).show();
+                            }
+                        }
+                    })
+                    .setNegativeButton("Later", null)
+                    .show();
+            return;
+        }
+        new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle("Cannot write Mod Menu settings")
+                .setMessage("File access is enabled, but Android still could not write the configuration. Check that the game folder exists and is writable. Career data is not modified.\n\nTarget: " + target)
+                .setPositiveButton("OK", null)
+                .show();
+    }
+
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
     private void showTextInput() {
         EditText name = new EditText(this);
@@ -518,8 +557,18 @@ public final class GameActivity extends NativeActivity {
                         return;
                     }
                     float[] t = io.mininxd.nfsu2.net.RoamNativeBridge.nativeGetGameTelemetry();
-                    if (t == null || t.length < 6 || t[0] < 0.5f) {
-                        telemetryText.setText("No live telemetry. Enter driving gameplay and try again.");
+                    if (t == null || t.length < 6) {
+                        telemetryText.setText("Telemetry snapshot unavailable.");
+                        return;
+                    }
+                    if (t[0] < 0.5f) {
+                        int gameState = Math.round(t[1]);
+                        if (gameState != 6) {
+                            telemetryText.setText("Game state " + gameState
+                                    + " — enter an active Drag event, start driving, then read again.");
+                        } else {
+                            telemetryText.setText("Game state is active, but the player-car or gearbox pointer is not ready. Drive for a moment and read again.");
+                        }
                         return;
                     }
                     int rawGear = Math.round(t[5]);
@@ -746,7 +795,7 @@ public final class GameActivity extends NativeActivity {
                     Toast.makeText(this, "All Mod Menu options are OFF.", Toast.LENGTH_SHORT).show();
                     dialog.dismiss();
                 } else {
-                    Toast.makeText(this, "Could not save modmenu.ini.", Toast.LENGTH_LONG).show();
+                    showModMenuStorageAccessDialog();
                 }
             });
             closeButton.setOnClickListener(button -> dialog.dismiss());
@@ -761,7 +810,7 @@ public final class GameActivity extends NativeActivity {
                     Toast.makeText(this, "Mod Menu settings saved. Gameplay hooks are still pending.", Toast.LENGTH_LONG).show();
                     dialog.dismiss();
                 } else {
-                    Toast.makeText(this, "Could not save modmenu.ini. Check access to Internal storage/nfsu2.", Toast.LENGTH_LONG).show();
+                    showModMenuStorageAccessDialog();
                 }
             });
             dialog.show();
