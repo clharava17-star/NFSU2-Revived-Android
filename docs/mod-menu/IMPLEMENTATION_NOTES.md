@@ -4,13 +4,20 @@ Target base: current `main` branch (v0.15.17 at the time of audit).
 Working branch: `feature/mod-menu-v0.2`.
 
 ## Root-cause repair for empty Drag telemetry
-### Frame-hook linker namespace fix
+### APK inspection: why the previous diagnostic still showed zero
 
-The user's diagnostic screenshot from the diagnostic APK reports `Hooks 0 | samples 0 | memory missing | ESP idle`, with all guest global addresses unmapped. This places the failure before Player/Car pointer traversal: `nfs_roam_frame_tick()` is not being executed (or its symbol is not being reached at all).
+The actual diagnostic APK was extracted and inspected with `readelf` and `strings`. Its `libnfsu2_android.so` has no `DT_NEEDED` entry for `libnfsu2_roam.so`, and no `libnfsu2_roam.so` / `nfs_roam_frame_tick` string. The GitHub Actions workflow only extracts this prebuilt game runtime from `prebuilt/lib_arm64.tar.gz`, then rebuilds `libnfsu2_roam.so` and packages the JNI libraries with Gradle; it does not run the Android CMake target. Therefore edits to `guest_runtime.cpp` and `CMakeLists.txt` are not incorporated into the current APK's main game library. This directly explains `Frame hooks 0 | live samples 0`: the packaged main runtime never calls the companion frame hook.
 
-The runtime previously resolved the companion with `dlopen("libnfsu2_roam.so")` and `dlsym()` from the NativeActivity D3D9 Present path, while Java separately loads the same library through `System.loadLibrary()`. Android linker namespaces can make a class-loader-loaded library invisible to a different native caller namespace even within the same process. The new build links the imported `libnfsu2_roam.so` directly as a dependency of `nfsu2_android` in CMake and calls the exported `nfs_roam_frame_tick()` directly from `guest_runtime.cpp`. This removes runtime symbol-discovery ambiguity and ensures both the Java JNI telemetry reader and game-frame hook use the same shared-library instance.
+The shipped `libnfsu2_android.so` does export the required dynamic symbols `g_mem_base`, `g_esp`, `g_eax`, `g_ecx`, `g_edx`, and `recomp_lookup`. The practical telemetry path for this workflow is therefore an on-demand read from the companion JNI: `RoamNativeBridge.nativeGetGameTelemetry()` now calls `mod_telemetry_refresh()` before returning its snapshot. That function resolves the game memory/stack symbols, updates guest-memory/ESP diagnostics, and refreshes the read-only snapshot. The existing Java Read button, shift-calibration poller, and experimental Auto Shift poller already call this getter, so all three will receive fresh data without needing to rebuild the 159 MB prebuilt game runtime.
 
-This change must be built and the device diagnostic rechecked. Acceptance: `Hooks` and `samples` become non-zero during gameplay; only then proceed to confirm guest memory base and the version-specific flow/player/race addresses. It is not yet proof that those game addresses are correct or that Auto Shift works.
+The `Frame hooks` counter may correctly remain zero in this APK; the `live samples` counter must increment on every JNI snapshot request. The next device acceptance test is:
+- `live samples` increases after tapping Read;
+- `memory ready` becomes true once the game image is mapped;
+- flow/player/race address readability is then reported independently;
+- if Player/Car remain missing, inspect the exact version-specific guest addresses next;
+- only when a valid active Drag snapshot is present should calibration and Auto Shift be tested.
+
+The runtime-source/CMake direct-link experiment was reverted from the current workflow path because the APK pipeline packages the prebuilt runtime. The native companion's on-demand JNI refresh is the change actually rebuilt by CI. No Auto Shift feature should be described as Perfect Shift until the green shift judgement/timing window has been mapped and verified.
 
 
 The user confirmed the car is physically at the Drag start/finish line while the Mod Menu still reported `Flow 0 | Player* missing | Car* missing | Type -1 | Track -1`. The previous telemetry path incorrectly required a non-zero guest ESP before even reading committed guest memory. The companion's Direct3D Present hook can be called at a point where the guest stack is idle, even though its memory image is already mapped. This short-circuited the update and left the static initial snapshot visible.
