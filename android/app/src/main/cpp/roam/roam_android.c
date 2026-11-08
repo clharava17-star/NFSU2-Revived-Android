@@ -34,14 +34,6 @@ uint32_t  *g_p_edx = NULL;
 recomp_func_t (*g_p_recomp_lookup)(uint32_t va) = NULL;
 int (*g_p_guest_is_readable)(uint32_t va, uint32_t bytes) = NULL;
 
-/* Explicit pointers from the guest runtime avoid relying on cross-namespace
- * dlsym() for the two values required by read-only telemetry. */
-__attribute__((visibility("default"))) void nfs_roam_bind_guest_memory(
-        ptrdiff_t *mem_base, uint32_t *esp) {
-    if (mem_base) g_p_mem_base = mem_base;
-    if (esp) g_p_esp = esp;
-}
-
 static int s_probe_pipe[2] = { -1, -1 };
 static pthread_mutex_t s_probe_mu = PTHREAD_MUTEX_INITIALIZER;
 
@@ -119,20 +111,31 @@ static inline void roam_android_patch_carpool(void) {
 }
 
 static int roam_android_resolve_symbols(void) {
-    static int lookup_attempted = 0;
-    if (!lookup_attempted) {
-        lookup_attempted = 1;
-        void *h = dlopen("libnfsu2_android.so", RTLD_NOLOAD | RTLD_GLOBAL);
+    void *h = NULL;
+    if (!g_p_mem_base || !g_p_esp) {
+        h = dlopen("libnfsu2_android.so", RTLD_NOLOAD | RTLD_GLOBAL);
         if (!h) h = dlopen("libnfsu2_android.so", RTLD_LAZY | RTLD_GLOBAL);
         if (!h) h = RTLD_DEFAULT;
-
         if (!g_p_mem_base) g_p_mem_base = (ptrdiff_t *)dlsym(h, "g_mem_base");
-        if (!g_p_recomp_lookup) g_p_recomp_lookup = (recomp_func_t (*)(uint32_t))dlsym(h, "recomp_lookup");
         if (!g_p_esp) g_p_esp = (uint32_t *)dlsym(h, "g_esp");
+    }
+
+    /* Runtime registers are only required by lifted free-roam calls, not by
+     * read-only telemetry. Resolve them once; the readable-memory fallback
+     * below remains available when guest_is_readable is not exported. */
+    static int runtime_registers_resolved = 0;
+    if (!runtime_registers_resolved) {
+        if (!h) {
+            h = dlopen("libnfsu2_android.so", RTLD_NOLOAD | RTLD_GLOBAL);
+            if (!h) h = dlopen("libnfsu2_android.so", RTLD_LAZY | RTLD_GLOBAL);
+            if (!h) h = RTLD_DEFAULT;
+        }
+        if (!g_p_recomp_lookup) g_p_recomp_lookup = (recomp_func_t (*)(uint32_t))dlsym(h, "recomp_lookup");
         if (!g_p_eax) g_p_eax = (uint32_t *)dlsym(h, "g_eax");
         if (!g_p_ecx) g_p_ecx = (uint32_t *)dlsym(h, "g_ecx");
         if (!g_p_edx) g_p_edx = (uint32_t *)dlsym(h, "g_edx");
         if (!g_p_guest_is_readable) g_p_guest_is_readable = (int (*)(uint32_t, uint32_t))dlsym(h, "guest_is_readable");
+        runtime_registers_resolved = g_p_recomp_lookup && g_p_eax && g_p_ecx && g_p_edx;
     }
     return g_p_mem_base != NULL && *g_p_mem_base != 0;
 }
@@ -263,6 +266,16 @@ static void mod_telemetry_update(void) {
        Calibration still requires the documented in-world race state. */
     next[0] = 1.0f;
     mod_telemetry_publish(next);
+}
+
+static void mod_telemetry_refresh(void) {
+    const int memory_ready = roam_android_memory_ready();
+    atomic_store(&g_mod_memory_ready, memory_ready ? 1 : 0);
+    atomic_store(&g_mod_stack_ready, (g_p_esp && *g_p_esp) ? 1 : 0);
+    /* Refresh on demand from Java. The MOD panel pauses the guest while open;
+     * the Auto Shift and calibration pollers request fresh read-only snapshots
+     * while a Drag race is running. */
+    mod_telemetry_update();
 }
 
 static jfloatArray mod_telemetry_array(JNIEnv *env) {
@@ -1592,6 +1605,7 @@ JNIEXPORT jintArray JNICALL Java_io_mininxd_nfsu2_GameActivity_nativeGetActionKe
 JNIEXPORT jfloatArray JNICALL Java_io_mininxd_nfsu2_net_RoamNativeBridge_nativeGetGameTelemetry(
         JNIEnv *env, jclass clazz) {
     (void)clazz;
+    mod_telemetry_refresh();
     return mod_telemetry_array(env);
 }
 
