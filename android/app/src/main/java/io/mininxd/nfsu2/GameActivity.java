@@ -816,17 +816,27 @@ public final class GameActivity extends NativeActivity {
                 if (observedShiftPeaks.isEmpty()) {
                     Toast.makeText(this, "No upshift samples captured. Calibration stopped.", Toast.LENGTH_LONG).show();
                 } else {
-                    int min = Integer.MAX_VALUE, max = 0, total = 0;
-                    for (int value : observedShiftPeaks) {
-                        min = Math.min(min, value);
-                        max = Math.max(max, value);
-                        total += value;
-                    }
-                    Toast.makeText(this, String.format(java.util.Locale.US,
-                            "Captured %d upshifts | peak %d–%d RPM | average %d RPM",
-                            observedShiftPeaks.size(), min, max, total / observedShiftPeaks.size()),
-                            Toast.LENGTH_LONG).show();
+                    java.util.ArrayList<Integer> sortedPeaks = new java.util.ArrayList<>(observedShiftPeaks);
+                    java.util.Collections.sort(sortedPeaks);
+                    int min = sortedPeaks.get(0);
+                    int max = sortedPeaks.get(sortedPeaks.size() - 1);
+                    int mid = sortedPeaks.size() / 2;
+                    int learnedRpm = sortedPeaks.size() % 2 == 0
+                            ? (sortedPeaks.get(mid - 1) + sortedPeaks.get(mid)) / 2
+                            : sortedPeaks.get(mid);
+                    learnedRpm = Math.max(ModMenuConfig.MIN_SHIFT_RPM,
+                            Math.min(ModMenuConfig.MAX_SHIFT_RPM, learnedRpm));
+                    ModMenuConfig.Settings learned = ModMenuConfig.load(this);
+                    learned.autoShiftRpm = learnedRpm;
+                    boolean saved = ModMenuConfig.save(this, learned);
+                    String message = String.format(java.util.Locale.US,
+                            saved
+                                    ? "Calibration saved: %d manual shifts | observed %d–%d RPM | Auto Shift target %d RPM"
+                                    : "Captured %d manual shifts | observed %d–%d RPM | settings could not be saved",
+                            observedShiftPeaks.size(), min, max, learnedRpm);
+                    Toast.makeText(this, message, Toast.LENGTH_LONG).show();
                 }
+                new Handler(Looper.getMainLooper()).postDelayed(this::startAutoShiftController, 240L);
             };
             calibrationPoll[0] = () -> {
                 if (!calibrationRunning[0]) return;
