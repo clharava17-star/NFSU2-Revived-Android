@@ -53,7 +53,7 @@ public final class RoamNativeBridge {
      *  currentCarTypeIndex, activePhysicsIdleRpm, activePhysicsMaxRpm,
      *  dragShiftThresholdRpm, activeGearShiftUpRpm, perfectShiftRangeRpm,
      *  forwardGearCount, driveTrainGear, lastShiftBonus, lastShiftRpm].
-     * signedGear: -1 reverse, 0 neutral, 1 first gear, etc.
+     * gameGearEnum: 0 reverse, 1 neutral, 2 first gear, etc.
      * The last ten values use the current upgraded RidePhysicsInfo and
      * DriveTrain, including the game's per-gear Perfect Shift range.
      */
