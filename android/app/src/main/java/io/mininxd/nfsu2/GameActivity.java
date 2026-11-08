@@ -946,8 +946,10 @@ public final class GameActivity extends NativeActivity {
                                 total += value;
                             }
                             String captured = String.format(java.util.Locale.US,
-                                    "Captured %d shifts | peak %d–%d RPM | avg %d RPM",
-                                    observedShiftPeaks.size(), min, max, total / observedShiftPeaks.size());
+                                    "Captured %d shifts | peak %d–%d RPM | avg %d RPM | Gear %d | %.0f RPM | Throttle %s",
+                                    observedShiftPeaks.size(), min, max, total / observedShiftPeaks.size(),
+                                    gear, currentRpm,
+                                    shownThrottle < 0 ? "n/a" : shownThrottle + "%");
                             calibrationText.setText(captured);
                             if (calibrationOverlayText[0] != null) calibrationOverlayText[0].setText(captured);
                         }
@@ -1353,8 +1355,12 @@ public final class GameActivity extends NativeActivity {
         if(!focused) {
             if(touchControls!=null)touchControls.releaseAll();
             setTiltKeys(false,false);
-            if(controlsWindow!=null)controlsWindow.dismiss();
-            if(diagnosticOverlay!=null)diagnosticOverlay.hide();
+            // A calibration overlay is intentionally non-focusable and must never
+            // tear down the gameplay touch-control layer while RPM samples are running.
+            if(!modCalibrationRunning) {
+                if(controlsWindow!=null)controlsWindow.dismiss();
+                if(diagnosticOverlay!=null)diagnosticOverlay.hide();
+            }
         }
         if(focused){
             if(Build.VERSION.SDK_INT>=30){
