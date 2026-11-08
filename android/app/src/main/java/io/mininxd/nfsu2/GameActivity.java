@@ -722,7 +722,7 @@ public final class GameActivity extends NativeActivity {
 
             TextView status = new TextView(this);
             status.setText(modMenuPausedGameplay
-                    ? "Gameplay paused while this menu is open. Experimental Auto Shift can run only for an armed event; other gameplay cheats are still pending."
+                    ? "Gameplay paused while this menu is open. Auto Shift automatically detects the current car's engine RPM range and works across vehicle changes; it must be armed for this Drag event."
                     : "Not in driving mode: pause was skipped to avoid backing out of a menu/results screen. Start the intended Drag event and open MOD while driving to arm Auto Shift.");
             status.setTextSize(13);
             form.addView(status);
@@ -761,7 +761,7 @@ public final class GameActivity extends NativeActivity {
                         eventTypeAtOpen[0] = raceType;
                         if (autoShiftScopeLabel[0] != null) {
                             autoShiftScopeLabel[0].setText("Active event detected: race type " + raceType
-                                    + " | track " + track + ". Saving Auto Shift will arm it only for this event.");
+                                    + " | track " + track + ". Saving Auto Shift arms this Drag event; its shift RPM is detected separately for every car.");
                         }
                     }
                     String playerPointer = t[6] > 0.5f ? "OK" : "missing";
@@ -1066,8 +1066,6 @@ public final class GameActivity extends NativeActivity {
         if(!focused) {
             if(touchControls!=null)touchControls.releaseAll();
             setTiltKeys(false,false);
-            // A calibration overlay is intentionally non-focusable and must never
-            // tear down the gameplay touch-control layer while RPM samples are running.
             if(controlsWindow!=null)controlsWindow.dismiss();
             if(diagnosticOverlay!=null)diagnosticOverlay.hide();
         }
