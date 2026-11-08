@@ -41,6 +41,9 @@ public final class GameActivity extends NativeActivity {
     private PopupWindow controlsWindow;
     private PopupWindow modCalibrationWindow;
     private boolean modCalibrationRunning;
+    // Only send Escape when the game is actually in driving mode. Menu/results
+    // screens must not receive a synthetic Back press when MOD is opened.
+    private boolean modMenuPausedGameplay;
     private Handler modCalibrationHandler;
     private Runnable modCalibrationPoll;
     private DiagnosticOverlay diagnosticOverlay;
@@ -556,15 +559,21 @@ public final class GameActivity extends NativeActivity {
         // If sampling is active, stop it first, then continue opening the paused Mod Menu.
         if (modCalibrationRunning) stopModCalibration();
         runOnUiThread(() -> {
-            // Use the existing HUD Pause/Escape input so the built-in game state handles pause.
-            pulseGamePauseKey();
+            // Pause through the same Escape key used by the in-game HUD. Do not
+            // inject Escape on event lobby/results screens: there it acts as Back.
+            modMenuPausedGameplay = nativeDrivingControls();
+            if (modMenuPausedGameplay) {
+                pulseGamePauseKey();
+            }
             ModMenuConfig.Settings settings = ModMenuConfig.load(this);
             LinearLayout form = new LinearLayout(this);
             form.setOrientation(LinearLayout.VERTICAL);
             form.setPadding(dp(20), dp(8), dp(20), dp(8));
 
             TextView status = new TextView(this);
-            status.setText("Cheats are not active yet. The telemetry check below is read-only.");
+            status.setText(modMenuPausedGameplay
+                    ? "Gameplay paused while this menu is open. Close the menu to resume. Cheats are not active yet."
+                    : "Not in driving mode: pause was skipped to avoid backing out of a menu/results screen. Start driving, then open MOD. Cheats are not active yet.");
             status.setTextSize(13);
             form.addView(status);
 
@@ -947,8 +956,11 @@ public final class GameActivity extends NativeActivity {
             });
             dialog.setOnDismissListener(ignored -> {
                 if (!calibrationRunning[0]) calibrationHandler.removeCallbacks(calibrationPoll[0]);
-                // Toggle the same in-game Pause/Escape action to resume gameplay.
-                pulseGamePauseKey();
+                // Resume only if this dialog actually paused an active driving session.
+                if (modMenuPausedGameplay) {
+                    modMenuPausedGameplay = false;
+                    pulseGamePauseKey();
+                }
             });
             allOffButton.setOnClickListener(button -> {
                 ModMenuConfig.Settings disabled = new ModMenuConfig.Settings();
