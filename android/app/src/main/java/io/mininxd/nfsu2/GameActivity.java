@@ -1095,6 +1095,7 @@ public final class GameActivity extends NativeActivity {
                     .setView(root)
                     .create();
             calibrationButton.setOnClickListener(button -> {
+                final float[][] calibrationSnapshot = {null};
                 if (calibrationRunning[0]) {
                     stopCalibration.run();
                     return;
@@ -1106,6 +1107,7 @@ public final class GameActivity extends NativeActivity {
                         return;
                     }
                     float[] initial = io.mininxd.nfsu2.net.RoamNativeBridge.nativeGetGameTelemetry();
+                    calibrationSnapshot[0] = initial;
                     if (initial == null || initial.length < 13) {
                         String reason = "Telemetry bridge is outdated. Reinstall the latest Mod Edition build.";
                         calibrationText.setText(reason);
@@ -1136,6 +1138,7 @@ public final class GameActivity extends NativeActivity {
                     Toast.makeText(this, reason, Toast.LENGTH_LONG).show();
                     return;
                 }
+                float[] initial = calibrationSnapshot[0];
                 // Persist the visible Mod Menu switches before leaving the dialog.
                 // Previously, starting calibration without first pressing Save left the
                 // on-screen checked switches unsaved; stopping calibration then reloaded
