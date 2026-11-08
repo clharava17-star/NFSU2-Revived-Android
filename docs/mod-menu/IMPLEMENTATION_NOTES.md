@@ -97,7 +97,10 @@ When the Mod Menu dialog is dismissed (Close, Save settings, All OFF, Back, or c
 
 On-device verification is still required to confirm that this pause toggle freezes gameplay and that the second Escape pulse resumes cleanly on the user's Android device.
 
-## Current status — v0.2 prototype
+## Latest CI failure and retry
+
+The initial Auto Pause build reached the Gradle build step after successful checkout, Java setup, prebuilt native extraction, Rust native builds, and native free-roam companion compilation. It failed because the Gradle 8.9 distribution download returned HTTP 504 from the GitHub release redirect; no APK artifact was produced. The workflow now retries `./gradlew assembleRelease --no-daemon` up to three times to handle transient distribution CDN failures.
+
 
 Implemented on `feature/mod-menu-v0.2`:
 - The existing HUD has a dedicated MOD control wired to `GameActivity.showModMenu()`.
