@@ -3,6 +3,10 @@
 Target base: current `main` branch (v0.15.17 at the time of audit).
 Working branch: `feature/mod-menu-v0.2`.
 
+## Auto Shift RPM learning from manual calibration
+
+When the player starts Shift Calibration during a valid in-world race and manually upshifts, the companion samples RPM while each gear is held and records the pre-upshift peak. On Stop, the app sorts the captured peaks, calculates their median (to reduce outlier influence), clamps it to the configured safe RPM range, and persists it as `auto_shift_rpm` in `modmenu.ini`. It then restarts the Auto Shift controller if the saved Master/Auto Shift/event scope allow it. This makes the RPM trigger adapt to the observed car/manual shift style. It is still an RPM-based approximation; it does not yet prove the game's green Perfect Shift judgement window.
+
 ## Auto Shift event arming from live read
 
 The Mod Menu originally captured the active race ID only once, before opening the dialog. If the JNI memory snapshot became valid a fraction later (or the first read happened after the UI opened), the Read button showed telemetry but the Save action still used the stale initial event fields. The Read button now refreshes the mutable event scope whenever a valid in-world race snapshot is read (Flow 6, race coordinator state 4, active-world-race flag set, valid car snapshot). The event type and track shown in the scope label are the same values persisted when Auto Shift is saved. The controller remains restricted to the saved event IDs.
