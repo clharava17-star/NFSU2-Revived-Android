@@ -285,9 +285,11 @@ public final class GameActivity extends NativeActivity {
                     boolean accelerating = throttle >= 0.25f && throttle <= 1.5f
                             && rpm > 0.0f && gear >= 2 && gear <= forwardGears;
                     float windowStart = shiftUpRpm;
-                    float windowEnd = shiftUpRpm + 0.05f * perfectRangeRpm;
-                    // RateShift returns Perfect (1.0) only for RPM strictly above
-                    // shiftUp[gear] and less than 5% of R beyond it.
+                    // Native telemetry returns the exact upper boundary delta:
+                    // (1 - gearboxMatchWindow) * gearboxShiftWeights * coefficientE4.
+                    // ShiftMatch (0x594F20) gives its maximum 1.0 result strictly
+                    // inside this interval; no guessed percentage is applied here.
+                    float windowEnd = shiftUpRpm + perfectRangeRpm;
                     boolean insidePerfectWindow = rpm > windowStart && rpm < windowEnd;
 
                     if (pendingGear[0] < 0 && !waitForNextGearRpmDrop[0]
@@ -787,7 +789,7 @@ public final class GameActivity extends NativeActivity {
                             ? String.format(java.util.Locale.US,
                                     "Car %d | Gear %d/%d | Shift %.0f RPM | Perfect window %.0f–%.0f RPM | Last %.2f @ %.0f RPM",
                                     Math.round(t[23]), Math.round(t[30]) - 1, Math.round(t[29]),
-                                    t[27] + 0.025f * t[28], t[27], t[27] + 0.05f * t[28], t[31], t[32])
+                                    t[27], t[27], t[27] + t[28], t[31], t[32])
                             : "Active per-gear Perfect Shift window unavailable | Auto Shift will stay idle";
                     String diagnostics = t.length >= 23
                             ? String.format(java.util.Locale.US,
