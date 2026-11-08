@@ -137,3 +137,22 @@ Validation:
 - Source integration points and branch contents were inspected through GitHub.
 - GitHub Actions run `42469535739` built native Rust and `libnfsu2_roam.so` successfully, but failed only when Gradle 8.9 distribution download returned HTTP 504 after three attempts. The wrapper now uses the Huawei Cloud Gradle 8.9 mirror; current build run `42469806108` is testing that change.
 - Do not merge this draft or distribute it until the Gradle build, ARM64 APK, and on-device Auto Shift regression test pass.
+
+## Reference APK audit — NFS Most Wanted Android (user-supplied)
+
+The user supplied `com.racas.mostwanted.apk` and a screenshot of its Indonesian cheat menu. The APK is a 33,780,676-byte Android package containing an ARM64 `libmain.so` (30,160,696 bytes), SDL3, and a small Java DEX. The native ELF dynamic symbol table is present and exposes the following named symbols (confirmed with `readelf -Ws`):
+
+- `game::DragShiftFrame(X86Context&)` — function symbol at `0x08e1640`, size 696 bytes. This is a strong indication that the reference port integrates Drag shifting at a game-frame/context boundary rather than relying only on a Java timer.
+- `game::ApplyCheats()` — function symbol at `0x08e0d7c`, size 444 bytes.
+- `game::g_focus_paused` — one-byte weak object symbol at `0x1cd033e`.
+- `audio::SetPaused(bool)` — function symbol at `0x08f80a8`, size 96 bytes.
+- Named cheat identifiers include `cheat_drag_shift`, `cheat_nos`, `cheat_speedbreaker`, `cheat_unlock_all`, `cheat_no_police`, `cheat_no_traffic`, and `cheat_cash`.
+
+These findings are from symbol metadata and strings only. They do not establish the complete function semantics, exact memory layout, or safe hook addresses for NFSU2. Do not copy these offsets, symbols, or binary code into NFSU2: the two games have different executable layouts and runtime implementations.
+
+### Consequence for NFSU2
+
+The reference suggests a better long-term shape for Auto Shift: evaluate a validated shift condition from the game execution/frame context, then submit a shift-up input through the port's existing input path. NFSU2's current build is an x86 guest executable running inside the Android recompiler; its own guest addresses and state must be mapped independently. The current Java controller remains an explicitly experimental RPM-triggered prototype until its timing is verified in the actual Drag event. The reference APK does not prove that the NFSU2 green Perfect Shift window is mapped.
+
+The reference's pause symbols are not needed for the already-working NFSU2 MOD pause/resume path. Keep the existing guest pause/input path unchanged.
+
