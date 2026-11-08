@@ -148,7 +148,7 @@ int roam_android_init_symbols(void) {
  * walks pointers while the guest simulation is updating them.
  */
 static pthread_mutex_t g_mod_telemetry_mu = PTHREAD_MUTEX_INITIALIZER;
-static jfloat g_mod_telemetry[17] = {0, 0, 0, 0, -1, -99, 0, 0, -1, -1, -1, 0, 0, 0, 0, 0, 0};
+static jfloat g_mod_telemetry[20] = {0, 0, 0, 0, -1, -99, 0, 0, -1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 static _Atomic uint32_t g_mod_frame_ticks = 0;
 static _Atomic uint32_t g_mod_snapshot_updates = 0;
 static _Atomic int g_mod_memory_ready = 0;
@@ -158,20 +158,21 @@ static _Atomic int g_mod_stack_ready = 0;
  * [4] throttle (-1 if controller unavailable), [5] signed gear (-1 reverse, 0 neutral, 1 first...),
  * [6] Player* readable, [7] Car* readable, [8] race coordinator state,
  * [9] race type, [10] track ID, [11] career race active, [12] in-world race (flow=6 and race state=4),
- * [13] frame-hook count, [14] telemetry-update count, [15] guest memory ready, [16] guest ESP ready.
+ * [13] frame-hook count, [14] telemetry-update count, [15] guest memory ready, [16] guest ESP ready,
+ * [17] flow address readable, [18] player-slot address readable, [19] race address readable.
  *
  * Game addresses and car field offsets match the v1.2 NA port definitions in roam_game.c.
  * Gear and throttle deliberately use the same fields as local_state() in roam_game.c.
  */
 
-static void mod_telemetry_publish(const jfloat values[17]) {
+static void mod_telemetry_publish(const jfloat values[20]) {
     pthread_mutex_lock(&g_mod_telemetry_mu);
     memcpy(g_mod_telemetry, values, sizeof(g_mod_telemetry));
     pthread_mutex_unlock(&g_mod_telemetry_mu);
 }
 
 static void mod_telemetry_update(void) {
-    jfloat next[17] = {0, 0, 0, 0, -1.0f, -99.0f, 0, 0, -1, -1, -1, 0, 0, 0, 0, 0, 0};
+    jfloat next[20] = {0, 0, 0, 0, -1.0f, -99.0f, 0, 0, -1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0};
     next[13] = (jfloat)atomic_load(&g_mod_frame_ticks);
     next[14] = (jfloat)(atomic_fetch_add(&g_mod_snapshot_updates, 1) + 1);
     next[15] = atomic_load(&g_mod_memory_ready) ? 1.0f : 0.0f;
@@ -188,7 +189,10 @@ static void mod_telemetry_update(void) {
         return;
     }
 
-    if (rh_mem_committed(flow_va, 4)) next[1] = (jfloat)MR32(flow_va);
+    next[17] = rh_mem_committed(flow_va, 4) ? 1.0f : 0.0f;
+    next[18] = rh_mem_committed(player_va, 4) ? 1.0f : 0.0f;
+    next[19] = rh_mem_committed(race_va, 4) ? 1.0f : 0.0f;
+    if (next[17] > 0.5f) next[1] = (jfloat)MR32(flow_va);
     if (rh_mem_committed(race_type_va, 4)) next[9] = (jfloat)MR32(race_type_va);
     if (rh_mem_committed(track_va, 4)) next[10] = (jfloat)MR32(track_va);
     if (rh_mem_committed(career_race_va, 4)) next[11] = MR32(career_race_va) ? 1.0f : 0.0f;
@@ -201,7 +205,7 @@ static void mod_telemetry_update(void) {
     }
     next[12] = (next[1] == 6.0f && next[8] == 4.0f) ? 1.0f : 0.0f;
 
-    if (!rh_mem_committed(player_va, 4)) {
+    if (next[18] < 0.5f) {
         mod_telemetry_publish(next);
         return;
     }
@@ -251,13 +255,13 @@ static void mod_telemetry_update(void) {
 }
 
 static jfloatArray mod_telemetry_array(JNIEnv *env) {
-    jfloat snapshot[17];
+    jfloat snapshot[20];
     pthread_mutex_lock(&g_mod_telemetry_mu);
     memcpy(snapshot, g_mod_telemetry, sizeof(snapshot));
     pthread_mutex_unlock(&g_mod_telemetry_mu);
 
-    jfloatArray result = (*env)->NewFloatArray(env, 17);
-    if (result) (*env)->SetFloatArrayRegion(env, result, 0, 17, snapshot);
+    jfloatArray result = (*env)->NewFloatArray(env, 20);
+    if (result) (*env)->SetFloatArrayRegion(env, result, 0, 20, snapshot);
     return result;
 }
 
@@ -1177,7 +1181,7 @@ __attribute__((visibility("default"))) void nfs_roam_frame_tick(void) {
     if (!roam_android_memory_ready()) {
         atomic_store(&g_mod_memory_ready, 0);
         atomic_store(&g_mod_stack_ready, (g_p_esp && *g_p_esp) ? 1 : 0);
-        jfloat unavailable[17] = {0, 0, 0, 0, -1, -99, 0, 0, -1, -1, -1, 0, 0, 0, 0, 0, 0};
+        jfloat unavailable[20] = {0, 0, 0, 0, -1, -99, 0, 0, -1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0};
         unavailable[13] = (jfloat)atomic_load(&g_mod_frame_ticks);
         unavailable[14] = (jfloat)atomic_load(&g_mod_snapshot_updates);
         unavailable[15] = 0.0f;
