@@ -54,6 +54,19 @@ The user observed a failed write to `/storage/emulated/0/NFSU2/mods/NFSU2_ModMen
 
 The user confirmed on-device that saving `modmenu.ini` now succeeds. The user should grant this access only to the Mod Edition app if they accept the broad external-storage permission. Do not move the config into the Career save directory.
 
+## Telemetry snapshot correction
+
+The previous first pass stopped reading the player car whenever `G_FLOW != 6` and used an inferred gearbox pointer chain plus `car + 0x438` as throttle. That was overly restrictive and did not match the established companion's own player snapshot code.
+
+The current snapshot follows `roam_game.c::local_state()`:
+- Player pointer: `SPLIT_PLAYERS_INDEX = 0x008900AC`; Player +4 contains the player Car pointer.
+- Speed: Car + `0x42C`.
+- RPM: Car + `0x440`.
+- Signed gear: `(int8_t)MR32(Car + 0x434)` (-1 reverse, 0 neutral, 1 first, ...).
+- Throttle: Car + `0x30` controller pointer, then controller + `0x20C`.
+
+The JNI snapshot now includes 13 values: validity, flow state, speed, RPM, throttle, signed gear, Player* validity, Car* validity, race coordinator state, race type, track ID, career-race flag, and an active-world-race flag. The latter is true only when `G_FLOW == 6` and `G_RACE.state == 4`, matching the definitions/comments in `roam_game.c`. A valid car snapshot is reported even outside an active race; calibration is still blocked until the active-race flag is true.
+
 ## Telemetry source and limits
 
 The current read-only snapshot mirrors the documented NFSU2 v1.2 US player-car layout used by the Android port:
