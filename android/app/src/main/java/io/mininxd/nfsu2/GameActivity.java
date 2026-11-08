@@ -264,16 +264,27 @@ public final class GameActivity extends NativeActivity {
                     float throttle = sample[4];
                     long now = android.os.SystemClock.elapsedRealtime();
 
-                    // A car swap or gear change starts a fresh RPM/frame baseline.
-                    if (observedCarType[0] != carType || observedGear[0] != gear) {
+                    // Keep shift confirmation separate from the RPM/frame baseline:
+                    // do not clear pendingGear before checking whether the game upshifted.
+                    boolean carChanged = observedCarType[0] != carType;
+                    boolean gearChanged = observedGear[0] != gear;
+                    if (carChanged) {
                         pendingGear[0] = -1;
                         waitForNextGearRpmDrop[0] = false;
-                        observedGear[0] = gear;
                         observedCarType[0] = carType;
+                        observedGear[0] = gear;
                         previousFrameRpm[0] = rpm;
                         lastFrameRpmAt[0] = now;
                         rpmRisePerMs[0] = 0.0f;
                         lastShiftAt[0] = now;
+                    } else if (gearChanged) {
+                        boolean acceptedUpshift = pendingGear[0] >= 2 && gear > pendingGear[0];
+                        pendingGear[0] = -1;
+                        waitForNextGearRpmDrop[0] = acceptedUpshift;
+                        observedGear[0] = gear;
+                        previousFrameRpm[0] = rpm;
+                        lastFrameRpmAt[0] = now;
+                        rpmRisePerMs[0] = 0.0f;
                     } else if (previousFrameRpm[0] < 0.0f) {
                         previousFrameRpm[0] = rpm;
                         lastFrameRpmAt[0] = now;
@@ -290,15 +301,7 @@ public final class GameActivity extends NativeActivity {
                         lastFrameRpmAt[0] = now;
                     }
 
-                    if (pendingGear[0] >= 1 && gear > pendingGear[0]) {
-                        // The game accepted the upshift. The new gear has its own
-                        // shiftUp threshold; wait until RPM is below that threshold.
-                        pendingGear[0] = -1;
-                        waitForNextGearRpmDrop[0] = true;
-                        previousFrameRpm[0] = rpm;
-                        lastFrameRpmAt[0] = now;
-                        rpmRisePerMs[0] = 0.0f;
-                    } else if (pendingGear[0] >= 1 && now - pendingSince[0] > 1200L) {
+                    if (pendingGear[0] >= 2 && now - pendingSince[0] > 1200L) {
                         // Do not spam Shift-Up if the game has not accepted the request.
                         pendingGear[0] = -1;
                         waitForNextGearRpmDrop[0] = true;
