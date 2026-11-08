@@ -43,7 +43,7 @@ public final class RoamNativeBridge {
     public static native void nativeSetFrameLimit(int fps);
     public static native int[] nativeGetActionKeys();
     /**
-     * Read-only 27-field snapshot:
+     * Read-only 33-field snapshot:
      * [valid, gameFlow, speedMps, rpm, throttle, signedGear,
      *  playerPointerValid, carPointerValid, raceState, raceType,
      *  trackId, careerRaceActive, activeWorldRace, frameHookCount,
@@ -51,10 +51,11 @@ public final class RoamNativeBridge {
      *  flowAddressReadable, playerSlotAddressReadable, raceAddressReadable,
      *  gameMemorySymbolFound, gameMemoryMapped, guestEspSymbolFound,
      *  currentCarTypeIndex, activePhysicsIdleRpm, activePhysicsMaxRpm,
-     *  dragShiftThresholdRpm].
+     *  dragShiftThresholdRpm, activeGearShiftUpRpm, perfectShiftRangeRpm,
+     *  forwardGearCount, driveTrainGear, lastShiftBonus, lastShiftRpm].
      * signedGear: -1 reverse, 0 neutral, 1 first gear, etc.
-     * The last three engine values are read from the current vehicle's
-     * upgraded RidePhysicsInfo/CarPhysicsInfo, not the stock CarTypeInfo table.
+     * The last ten values use the current upgraded RidePhysicsInfo and
+     * DriveTrain, including the game's per-gear Perfect Shift range.
      */
 
     public static native float[] nativeGetGameTelemetry();
