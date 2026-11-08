@@ -320,7 +320,8 @@ static void mod_telemetry_update(void) {
                 const int perf_type = (int32_t)MR32(drive_train + 0xF0u);
                 const int forward_gears = active_cpi && rh_mem_committed(active_cpi + 0x1C8u, 4)
                         ? (int32_t)MR32(active_cpi + 0x1C8u) : 0;
-                const int max_diff_index = perf_type * 9 + drive_gear;
+                const int max_diff_index = (perf_type >= 0 && perf_type <= 2 && drive_gear >= 0 && drive_gear <= 8)
+                        ? perf_type * 9 + drive_gear : -1;
                 if (drive_gear >= 2 && drive_gear <= 7
                         && drive_gear <= forward_gears
                         && forward_gears <= 6
