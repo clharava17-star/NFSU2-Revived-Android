@@ -78,7 +78,11 @@ The user also reported that the calibration overlay's Stop button did not respon
 
 ## Pause while Mod Menu is open
 
-The MOD HUD action now pauses the guest simulation through the existing `setGuestPaused(bool)` scheduler API. A JNI bridge `GameActivity.nativeSetModMenuPaused(boolean)` sets an activity-owned atomic flag, and the native host loop reapplies it rather than unconditionally resuming the guest every render cycle. This keeps the game simulation and looping audio suspended while the panel is open. The dialog dismiss listener resumes the guest for Close, Save settings, All OFF, Back, or when shift calibration is started. OS lifecycle pause/resume handling remains separate; the Mod Menu flag does not override an Android background pause.
+The MOD HUD action reuses the exact same guest input path as the existing HUD Pause control: DirectInput scan code `0x01` (Escape). The Java helper sends a short key-down pulse and releases it after 140 ms, using the existing `nativeKey` wrapper that the touch controls already use. This delegates the pause state to the game's own pause menu rather than introducing an unverified native JNI entry point.
+
+When the Mod Menu dialog is dismissed (Close, Save settings, All OFF, Back, or calibration start), the same Escape pulse is sent again to resume the game. The temporary native `nativeSetModMenuPaused` bridge was removed after inspecting the built APK and finding that the workflow packages prebuilt game native libraries; it did not contain that newly added JNI symbol. The implementation now uses only the already-present Escape input API.
+
+On-device verification is still required to confirm that this pause toggle freezes gameplay and that the second Escape pulse resumes cleanly on the user's Android device.
 
 ## Current status — v0.2 prototype
 
