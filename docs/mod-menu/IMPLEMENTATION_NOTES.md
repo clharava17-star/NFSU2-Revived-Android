@@ -1,3 +1,11 @@
+## Calibration input pass-through and preserving Auto Shift settings
+
+The on-screen calibration HUD is now a non-focusable, non-modal PopupWindow. The previous focusable popup took window focus; GameActivity's focus-loss handler then dismissed the touch-control overlay and released all active controls. The Stop button remains touchable, while gameplay controls outside the narrow banner are allowed to reach the game. The focus-loss handler also avoids tearing down controls while calibration is active.
+
+Starting calibration now persists the switches, RPM target, and currently identified Drag type/track before dismissing the menu. Previously the visible Master Cheat / Auto Shift checkboxes could be enabled without pressing Save settings; Stop then reloaded the older on-disk OFF state, making Auto Shift appear to switch itself off. Calibration now keeps those preferences instead of silently reverting them.
+
+The calibration display reports throttle and the number of observed upshifts. It only records a shift peak when throttle was actually applied and the peak reached the minimum supported target RPM, ignoring idle/start-grid gear changes. A no-sample stop leaves the configured RPM untouched and preserves the saved options.
+
 ## Auto Shift — calibrated timing and one-sample RPM prediction
 
 The Drag Auto Shift controller now uses the calibrated manual-shift peak as its shift point and estimates the RPM at the next 16 ms polling sample from the measured RPM rise. It can trigger on the first sample that reaches the learned target, or one poll earlier when RPM is already at least 90% of target and the one-sample prediction crosses it. Prediction is capped at +500 RPM to avoid a noisy sample causing a premature shift.
