@@ -28,6 +28,15 @@
 #include <sys/mman.h>
 #include <jni.h>
 
+/* Bind to the same exported game globals used by the known-working APK.
+ * libnfsu2_android.so is loaded first by GameActivity before this companion. */
+extern ptrdiff_t g_mem_base;
+extern uint32_t g_esp;
+extern uint32_t g_eax;
+extern uint32_t g_ecx;
+extern uint32_t g_edx;
+extern recomp_func_t recomp_lookup(uint32_t va);
+
 ptrdiff_t *g_p_mem_base = NULL;
 uint32_t  *g_p_esp = NULL;
 uint32_t  *g_p_eax = NULL;
@@ -139,27 +148,28 @@ static inline void roam_android_patch_carpool(void) {
     }
 }
 
+static int roam_android_resolve_symbols(void) {
+    g_p_mem_base = &g_mem_base;
+    g_p_esp = &g_esp;
+    g_p_eax = &g_eax;
+    g_p_ecx = &g_ecx;
+    g_p_edx = &g_edx;
+    g_p_recomp_lookup = &recomp_lookup;
+
+    /* Optional guard exported only by some runtime variants. */
+    if (!g_p_guest_is_readable) {
+        g_p_guest_is_readable = (int (*)(uint32_t, uint32_t))
+                dlsym(RTLD_DEFAULT, "guest_is_readable");
+    }
+    modmenu_resolve_guest_key();
+    return *g_p_mem_base != 0;
+}
+
 int roam_android_init_symbols(void) {
-    if (!g_p_mem_base) {
-        void *h = dlopen("libnfsu2_android.so", RTLD_NOLOAD | RTLD_GLOBAL);
-        if (!h) h = dlopen("libnfsu2_android.so", RTLD_LAZY | RTLD_GLOBAL);
-        if (!h) h = RTLD_DEFAULT;
-
-        g_p_mem_base = (ptrdiff_t *)dlsym(h, "g_mem_base");
-        g_p_recomp_lookup = (recomp_func_t (*)(uint32_t))dlsym(h, "recomp_lookup");
-        g_p_esp = (uint32_t *)dlsym(h, "g_esp");
-        g_p_eax = (uint32_t *)dlsym(h, "g_eax");
-        g_p_ecx = (uint32_t *)dlsym(h, "g_ecx");
-        g_p_edx = (uint32_t *)dlsym(h, "g_edx");
-        g_p_guest_is_readable = (int (*)(uint32_t, uint32_t))dlsym(h, "guest_is_readable");
-        modmenu_resolve_guest_key();
-    }
-
-    if (g_p_mem_base && *g_p_mem_base != 0 && g_p_esp && *g_p_esp != 0) {
-        if (!g_carpool_patched) roam_android_patch_carpool();
-        return 1;
-    }
-    return 0;
+    if (!roam_android_resolve_symbols() || !g_p_esp || *g_p_esp == 0
+            || !g_p_recomp_lookup || !g_p_eax || !g_p_ecx || !g_p_edx) return 0;
+    if (!g_carpool_patched) roam_android_patch_carpool();
+    return 1;
 }
 
 static pthread_mutex_t g_mod_telemetry_mu = PTHREAD_MUTEX_INITIALIZER;
