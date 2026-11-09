@@ -287,8 +287,10 @@ public final class GameActivity extends NativeActivity {
                         && shiftUpRpm >= 1000.0f && shiftUpRpm <= 20000.0f
                         && perfectRangeRpm > 0.0f && perfectRangeRpm <= 5000.0f
                         && forwardGears >= 1 && forwardGears <= 6
-                        && drivetrainGear >= 2 && drivetrainGear <= forwardGears
-                        && gear == drivetrainGear;
+                        /* Car gear is 1=1st; DriveTrain enum is 2=1st. */
+                        && drivetrainGear >= 2 && drivetrainGear <= forwardGears + 1
+                        && gear >= 1 && gear <= forwardGears
+                        && gear + 1 == drivetrainGear;
 
                 if (!matchingDrag || !validVehicle || !validPerfectWindow) {
                     pendingGear[0] = -1;
@@ -357,7 +359,7 @@ public final class GameActivity extends NativeActivity {
                     }
 
                     boolean accelerating = throttle >= 0.25f && throttle <= 1.5f
-                            && rpm > 0.0f && gear >= 2 && gear <= forwardGears;
+                            && rpm > 0.0f && gear >= 1 && gear <= forwardGears;
                     float windowEnd = shiftUpRpm + perfectRangeRpm;
                     boolean predictedPerfectWindow = predictedRpm >= shiftUpRpm
                             && predictedRpm < windowEnd;
