@@ -42,6 +42,8 @@ public final class RoamNativeBridge {
     public static native void nativeRoamHorn(boolean held);
     public static native void nativeSetFrameLimit(int fps);
     public static native int[] nativeGetActionKeys();
+    /** Latest per-frame game telemetry: 33 floats documented by the native bridge. */
+    public static native float[] nativeGetGameTelemetry();
     public static native void nativeSetModCheats(int flags, int shiftUpScan);
 
     /**
