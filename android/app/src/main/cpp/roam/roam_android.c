@@ -460,13 +460,14 @@ static void modmenu_release_key(void) {
     s_modmenu_pressed_key = -1;
 }
 
-void roam_modmenu_key_pulse(int scan) {
-    if (scan <= 0 || scan >= 256) return;
+int roam_modmenu_key_pulse(int scan) {
+    if (scan <= 0 || scan >= 256) return 0;
     modmenu_resolve_guest_key();
-    if (!s_modmenu_guest_key && !s_modmenu_guest_key_legacy) return;
+    if (!s_modmenu_guest_key && !s_modmenu_guest_key_legacy) return 0;
     modmenu_release_key();
     modmenu_send_guest_key((unsigned)scan, 1);
     s_modmenu_pressed_key = scan; /* released at the next frame hook */
+    return 1;
 }
 
 
