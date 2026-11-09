@@ -8,6 +8,6 @@
 
 int  roam_modmenu_flags(void);
 int  roam_modmenu_shift_key(void);
-void roam_modmenu_key_pulse(int scan);
+int  roam_modmenu_key_pulse(int scan);
 
 #endif
