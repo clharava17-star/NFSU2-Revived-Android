@@ -161,7 +161,7 @@ int roam_android_init_symbols(void) {
 }
 
 static pthread_mutex_t g_mod_telemetry_mu = PTHREAD_MUTEX_INITIALIZER;
-static jfloat g_mod_telemetry[33] = {0, 0, 0, 0, -1, -99, 0, 0, -1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
+static jfloat g_mod_telemetry[34] = {0, 0, 0, 0, -1, -99, 0, 0, -1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
 static _Atomic uint32_t g_mod_frame_ticks = 0;
 static _Atomic uint32_t g_mod_snapshot_updates = 0;
 static _Atomic int g_mod_memory_ready = 0;
@@ -193,14 +193,14 @@ static _Atomic int g_mod_stack_ready = 0;
  * Gear and throttle use the player snapshot fields documented in local_state().
  */
 
-static void mod_telemetry_publish(const jfloat values[33]) {
+static void mod_telemetry_publish(const jfloat values[34]) {
     pthread_mutex_lock(&g_mod_telemetry_mu);
     memcpy(g_mod_telemetry, values, sizeof(g_mod_telemetry));
     pthread_mutex_unlock(&g_mod_telemetry_mu);
 }
 
 static void mod_telemetry_update(void) {
-    jfloat next[33] = {0, 0, 0, 0, -1.0f, -99.0f, 0, 0, -1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f};
+    jfloat next[34] = {0, 0, 0, 0, -1.0f, -99.0f, 0, 0, -1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f};
     next[13] = (jfloat)atomic_load(&g_mod_frame_ticks);
     next[14] = (jfloat)(atomic_fetch_add(&g_mod_snapshot_updates, 1) + 1);
     next[15] = atomic_load(&g_mod_memory_ready) ? 1.0f : 0.0f;
@@ -226,7 +226,16 @@ static void mod_telemetry_update(void) {
     if (next[17] > 0.5f) next[1] = (jfloat)MR32(flow_va);
     if (rh_mem_committed(race_type_va, 4)) next[9] = (jfloat)MR32(race_type_va);
     if (rh_mem_committed(track_va, 4)) next[10] = (jfloat)MR32(track_va);
-    if (rh_mem_committed(career_race_va, 4)) next[11] = MR32(career_race_va) ? 1.0f : 0.0f;
+    if (rh_mem_committed(career_race_va, 4)) {
+        const uint32_t career_race = MR32(career_race_va);
+        next[11] = career_race ? 1.0f : 0.0f;
+        /* The Career race object uses type 4 for Drag; publish an explicit
+         * validated mode flag so Java does not guess from the global enum. */
+        if (career_race && career_race <= 0xFFFFFFCAu
+                && rh_mem_committed(career_race + 0x0Fu, 1u)) {
+            next[33] = MR8(career_race + 0x0Fu) == 4u ? 1.0f : 0.0f;
+        }
+    }
 
     if (rh_mem_committed(race_va, 4)) {
         const uint32_t race = MR32(race_va);
@@ -389,13 +398,13 @@ static void mod_telemetry_update(void) {
 }
 
 static jfloatArray mod_telemetry_array(JNIEnv *env) {
-    jfloat snapshot[33];
+    jfloat snapshot[34];
     pthread_mutex_lock(&g_mod_telemetry_mu);
     memcpy(snapshot, g_mod_telemetry, sizeof(snapshot));
     pthread_mutex_unlock(&g_mod_telemetry_mu);
 
-    jfloatArray result = (*env)->NewFloatArray(env, 33);
-    if (result) (*env)->SetFloatArrayRegion(env, result, 0, 33, snapshot);
+    jfloatArray result = (*env)->NewFloatArray(env, 34);
+    if (result) (*env)->SetFloatArrayRegion(env, result, 0, 34, snapshot);
     return result;
 }
 
