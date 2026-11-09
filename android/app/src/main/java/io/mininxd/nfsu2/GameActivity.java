@@ -243,6 +243,10 @@ public final class GameActivity extends NativeActivity {
         final long[] pendingSince = {0L};
         final long[] lastShiftAt = {0L};
         final boolean[] waitForNextGearRpmDrop = {false};
+        final int[] failedShiftAttempts = {0};
+        final int MAX_SHIFT_ATTEMPTS = 3;
+        final long SHIFT_CONFIRM_TIMEOUT_MS = 120L;
+        final long SHIFT_RETRY_COOLDOWN_MS = 125L;
         final int[] observedGear = {-1};
         final int[] observedCarType = {-1};
         final long[] previousFrame = {-1L};
@@ -289,6 +293,7 @@ public final class GameActivity extends NativeActivity {
                 if (!matchingDrag || !validVehicle || !validPerfectWindow) {
                     pendingGear[0] = -1;
                     waitForNextGearRpmDrop[0] = false;
+                    failedShiftAttempts[0] = 0;
                     observedGear[0] = -1;
                     observedCarType[0] = -1;
                     previousFrame[0] = -1L;
@@ -322,6 +327,7 @@ public final class GameActivity extends NativeActivity {
                     if (carChanged) {
                         pendingGear[0] = -1;
                         waitForNextGearRpmDrop[0] = false;
+                        failedShiftAttempts[0] = 0;
                         observedCarType[0] = carType;
                         observedGear[0] = gear;
                         lastShiftAt[0] = now;
@@ -329,16 +335,25 @@ public final class GameActivity extends NativeActivity {
                         boolean acceptedUpshift = pendingGear[0] >= 2 && gear > pendingGear[0];
                         pendingGear[0] = -1;
                         waitForNextGearRpmDrop[0] = acceptedUpshift;
+                        failedShiftAttempts[0] = 0;
                         observedGear[0] = gear;
                         rpmDeltaPerFrame[0] = 0.0f;
                     }
 
-                    if (pendingGear[0] >= 2 && now - pendingSince[0] > 1200L) {
+                    if (pendingGear[0] >= 2
+                            && now - pendingSince[0] >= SHIFT_CONFIRM_TIMEOUT_MS) {
                         pendingGear[0] = -1;
-                        waitForNextGearRpmDrop[0] = true;
+                        failedShiftAttempts[0] = Math.min(
+                                MAX_SHIFT_ATTEMPTS, failedShiftAttempts[0] + 1);
+                        /* Keep a missed pulse from locking Auto Shift out for the
+                         * rest of the gear. Retry only while the current gear's
+                         * exact Perfect Shift window is still open. */
+                        waitForNextGearRpmDrop[0] =
+                                failedShiftAttempts[0] >= MAX_SHIFT_ATTEMPTS;
                     }
                     if (waitForNextGearRpmDrop[0] && rpm < shiftUpRpm) {
                         waitForNextGearRpmDrop[0] = false;
+                        failedShiftAttempts[0] = 0;
                     }
 
                     boolean accelerating = throttle >= 0.25f && throttle <= 1.5f
@@ -348,8 +363,9 @@ public final class GameActivity extends NativeActivity {
                             && predictedRpm < windowEnd;
 
                     if (pendingGear[0] < 0 && !waitForNextGearRpmDrop[0]
+                            && failedShiftAttempts[0] < MAX_SHIFT_ATTEMPTS
                             && accelerating && predictedPerfectWindow
-                            && now - lastShiftAt[0] >= 250L) {
+                            && now - lastShiftAt[0] >= SHIFT_RETRY_COOLDOWN_MS) {
                         pendingGear[0] = gear;
                         pendingSince[0] = now;
                         lastShiftAt[0] = now;
