@@ -1694,9 +1694,13 @@ __attribute__((visibility("default"))) void nfs_roam_frame_tick(void) {
     atomic_store(&g_mod_memory_ready, 1);
     atomic_store(&g_mod_stack_ready, (g_p_esp && *g_p_esp) ? 1 : 0);
 
-    /* Telemetry is sampled once per rendered frame only while Auto Shift is
-     * enabled. This replaces the former 4 ms Java-main-thread polling loop. */
-    if (mod_flags & NFSU2_MOD_AUTO_SHIFT) mod_telemetry_update();
+    /* Telemetry is sampled once per game frame while Auto Shift is enabled.
+     * With the feature off, keep diagnostics warm at a low 2 Hz rate. */
+    if (mod_flags & NFSU2_MOD_AUTO_SHIFT) {
+        mod_telemetry_update();
+    } else if ((frame_tick & 31u) == 0u) {
+        mod_telemetry_update();
+    }
 
     /* Release any previous one-frame pulse even when the guest stack is not
      * currently available, so an input can never remain stuck across pauses. */
