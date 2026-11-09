@@ -44,6 +44,8 @@ public final class RoamNativeBridge {
     public static native int[] nativeGetActionKeys();
     /** Latest per-frame game telemetry: 34 floats documented by the native bridge. */
     public static native float[] nativeGetGameTelemetry();
+    /** Fill a reusable caller-owned array from the latest frame snapshot. */
+    public static native void nativeReadGameTelemetry(float[] output);
     public static native void nativeSetModCheats(int flags, int shiftUpScan);
 
     /**
