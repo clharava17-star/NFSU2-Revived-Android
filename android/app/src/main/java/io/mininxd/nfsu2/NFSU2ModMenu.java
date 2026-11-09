@@ -164,7 +164,7 @@ final class NFSU2ModMenu {
         telemetryButton.setOnClickListener(view -> {
             try {
                 float[] t = RoamNativeBridge.nativeGetGameTelemetry();
-                if (t == null || t.length < 33) {
+                if (t == null || t.length < 34) {
                     telemetryStatus.setText("Telemetry bridge tidak tersedia atau belum menghasilkan data.");
                     return;
                 }
@@ -176,13 +176,15 @@ final class NFSU2ModMenu {
                 int forwardGears = Math.round(t[29]);
                 boolean windowValid = Float.isFinite(t[27]) && Float.isFinite(t[28])
                         && t[27] >= 1000.0f && t[28] > 0.0f;
+                boolean careerDrag = t[33] > 0.5f;
                 String window = windowValid
                         ? String.format(java.util.Locale.US, "%.0f–%.0f RPM", t[27], t[27] + t[28])
                         : "tidak terbaca";
                 String status = String.format(java.util.Locale.US,
-                        "Flow %d | RaceState %d | Type %d | Track %d\nRPM %.0f | Gear %d / Drivetrain %d of %d\nThrottle %.0f%% | Perfect window %s\nFrame %d | CarType %d | Snapshot %s",
-                        flow, raceState, raceType, Math.round(t[10]), t[3], gear, driveGear,
-                        forwardGears, Math.max(0.0f, t[4] * 100.0f), window,
+                        "Flow %d | RaceState %d | Type %d | Track %d | Career Drag %s\nRPM %.0f | Gear %d / Drivetrain %d of %d\nThrottle %.0f%% | Perfect window %s\nFrame %d | CarType %d | Snapshot %s",
+                        flow, raceState, raceType, Math.round(t[10]), careerDrag ? "YES" : "NO",
+                        t[3], gear, driveGear, forwardGears,
+                        Math.max(0.0f, t[4] * 100.0f), window,
                         Math.round(t[13]), Math.round(t[23]),
                         t[0] > 0.5f ? "valid" : "invalid");
                 telemetryStatus.setText(status);
