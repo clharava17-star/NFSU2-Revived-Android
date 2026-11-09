@@ -328,7 +328,8 @@ static void mod_telemetry_update(void) {
 
     /* Read the game's exact per-gear shift-up point and Perfect Shift range.
        Car +0x34 -> PhysicsMover (vtbl 0x7A25E0), mover +0x4C -> DriveTrain
-       (vtbl 0x7A2508). The shiftUp array uses Gear enum 0=R,1=N,2=1st. */
+       (vtbl 0x7A2508). The index used here matches Car::gear
+       (1=1st, 2=2nd, etc.), as validated by modmenu_shift_window(). */
     if (rh_mem_committed(car + 0x34u, 4)) {
         const uint32_t mover = MR32(car + 0x34u);
         if (mover && mover <= 0xFFFFFF0Fu && rh_mem_committed(mover, 0x130u)
