@@ -181,10 +181,10 @@ final class NFSU2ModMenu {
                         ? String.format(java.util.Locale.US, "%.0f–%.0f RPM", t[27], t[27] + t[28])
                         : "tidak terbaca";
                 String status = String.format(java.util.Locale.US,
-                        "Flow %d | RaceState %d | Type %d | Track %d | Career Drag %s\nRPM %.0f | Gear %d / Drivetrain %d of %d\nThrottle %.0f%% | Perfect window %s\nFrame %d | CarType %d | Snapshot %s",
+                        "Flow %d | RaceState %d | Type %d | Track %d | Career Drag %s\nRPM %.0f | Gear %d / Drivetrain %d of %d\nThrottle %.0f%% | Perfect window %s\nLast ShiftMatch %.2f @ %.0f RPM\nFrame %d | CarType %d | Snapshot %s",
                         flow, raceState, raceType, Math.round(t[10]), careerDrag ? "YES" : "NO",
                         t[3], gear, driveGear, forwardGears,
-                        Math.max(0.0f, t[4] * 100.0f), window,
+                        Math.max(0.0f, t[4] * 100.0f), window, t[31], t[32],
                         Math.round(t[13]), Math.round(t[23]),
                         t[0] > 0.5f ? "valid" : "invalid");
                 telemetryStatus.setText(status);
@@ -194,6 +194,11 @@ final class NFSU2ModMenu {
         });
         body.addView(telemetryButton);
         body.addView(telemetryStatus);
+        TextView telemetryHint = new TextView(activity);
+        telemetryHint.setText("Last ShiftMatch mendekati +1.00 = Perfect Shift. Nilai ini berasal dari drivetrain aktif.");
+        telemetryHint.setTextColor(0xffbdbdbd);
+        telemetryHint.setTextSize(10);
+        body.addView(telemetryHint);
 
         new AlertDialog.Builder(activity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
                 .setTitle("NFSU2 REVIVED – MOD MENU")
