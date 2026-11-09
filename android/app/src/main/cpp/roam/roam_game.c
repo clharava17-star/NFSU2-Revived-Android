@@ -96,6 +96,7 @@
 #include "roam_host.h"
 #endif
 #include "roam_core.h"
+#include "roam_modmenu.h"
 #include "roam_plat.h"
 #include "carsfx.h"
 #include "names.h"
@@ -7939,8 +7940,153 @@ static void car_rescue(int64_t host){
              (double)MRF32(car + 0x74u), (double)MRF32(car + 0x78u), (double)p[0], (double)p[1], (double)p[2],
              g_lp_ok ? "where it last was" : "the new career's start (no good place this time in free roam)");
 }
+/* Offline Mod Menu helpers. The switches are deliberately applied before the
+ * multiplayer early-return so they work with multiplayer disabled. */
+static int s_mod_shift_armed = 1;
+static uint32_t s_mod_shift_car = 0;
+static int s_mod_shift_last_gear = -1;
+static int s_mod_shift_prev_valid = 0;
+static float s_mod_shift_prev_rpm = 0.0f;
+
+static void modmenu_reset_shift_state(void) {
+    s_mod_shift_armed = 1;
+    s_mod_shift_car = 0;
+    s_mod_shift_last_gear = -1;
+    s_mod_shift_prev_valid = 0;
+    s_mod_shift_prev_rpm = 0.0f;
+}
+
+static int modmenu_shift_window(uint32_t car, int gear, int *max_gear, float *point, float *perfect_window) {
+    if (rd32(car + 0x28u) != 1u) return 0;
+    uint32_t mover = rd32(car + 0x34u);
+    if (!ok(mover, 0x50u)) return 0;
+    uint32_t drivetrain = rd32(mover + 0x4cu);
+    if (!ok(drivetrain, 0xf4u)) return 0;
+    uint32_t spec = rd32(drivetrain + 0x18u);
+    if (!ok(spec, 0x1cu)) return 0;
+
+    int maximum = (int32_t)rd32(spec + 0x18u) + 1;
+    int drivetrain_gear = (int32_t)rd32(drivetrain + 0x3cu);
+    int selector = (int32_t)rd32(drivetrain + 0xf0u);
+    if (maximum < 2 || maximum > 8 || gear < 1 || gear >= maximum || drivetrain_gear != gear || selector < 0 || selector > 3) return 0;
+
+    uint32_t point_addr = drivetrain + 0x84u + (uint32_t)gear * 4u;
+    uint32_t weight_addr = 0x007fbf60u + ((uint32_t)selector * 9u + (uint32_t)gear) * 4u;
+    if (!ok(point_addr, 3u) || !ok(drivetrain + 0xe4u, 3u) || !ok(weight_addr, 3u) || !ok(0x007fbf5cu, 3u)) return 0;
+
+    float shift_point = MRF32(point_addr);
+    float shift_scale = MRF32(drivetrain + 0xe4u);
+    float shift_weight = MRF32(weight_addr);
+    float match_window = MRF32(0x007fbf5cu);
+    float window = shift_weight * shift_scale;
+    float late_window = (1.0f - match_window) * window;
+    if (!__builtin_isfinite(shift_point) || !__builtin_isfinite(window) || !__builtin_isfinite(match_window) ||
+        !__builtin_isfinite(late_window) || shift_point <= 0.0f || shift_point > 30000.0f || window <= 0.0f ||
+        match_window <= 0.0f || match_window >= 1.0f || late_window <= 0.0f || late_window > 32000.0f) return 0;
+
+    *max_gear = maximum;
+    *point = shift_point;
+    *perfect_window = late_window;
+    return 1;
+}
+
+static void modmenu_game_frame(void) {
+    int flags = roam_modmenu_flags();
+    /* This menu intentionally never changes online / LAN multiplayer state. */
+    if (!flags || O.on || (rd32(G_GAMEMODE) & 0x200u)) {
+        modmenu_reset_shift_state();
+        return;
+    }
+
+    uint32_t car = player_car();
+    if (!ok(car, 0x9e0) || rd32(G_FLOW) != 6u) {
+        modmenu_reset_shift_state();
+        return;
+    }
+
+    if (flags & NFSU2_MOD_INFINITE_NOS) {
+        uint32_t n = car + CAR_NOS;
+        if (ok(n, 0x424) && ok(G_TICKS, 3)) {
+            uint32_t since = MR32(n + 0x420u);
+            uint32_t full = MR32(n + 0x414u);
+            uint32_t left = MR32(n + 0x41cu);
+            if (since && since < 0x7fffffffu && full && full < 0x7fffffffu && left < 0x7fffffffu) {
+                uint32_t elapsed = MR32(G_TICKS) - since;
+                uint32_t maximum = 0x7ffffffeu;
+                MR32(n + 0x41cu) = elapsed > maximum - full ? maximum : elapsed + full;
+            }
+        }
+    }
+
+    if (!(flags & NFSU2_MOD_AUTO_SHIFT)) {
+        s_mod_shift_armed = 1;
+        s_mod_shift_prev_valid = 0;
+        return;
+    }
+
+    uint32_t event = rd32(G_CAREER_RACE);
+    int drag = ok(event, 0x35u) && MR8(event + 0x0fu) == 4u;
+    if (!drag) {
+        s_mod_shift_armed = 1;
+        s_mod_shift_car = car;
+        s_mod_shift_last_gear = -1;
+        s_mod_shift_prev_valid = 0;
+        return;
+    }
+    if (!ok(0x0089e7d8u, 0u) || !ok(0x00890108u, 3u)) return;
+    if (MR8(0x0089e7d8u) == 0u && (int32_t)rd32(0x00890108u) == 0) return;
+
+    if (s_mod_shift_car != car) {
+        s_mod_shift_car = car;
+        s_mod_shift_armed = 1;
+        s_mod_shift_last_gear = -1;
+        s_mod_shift_prev_valid = 0;
+    }
+    if (!ok(car, 0x444u)) return;
+
+    float rpm = MRF32(car + 0x440u);
+    if (ok(0x007fbed8u, 3u) && ok(0x00784258u, 3u)) {
+        float override_rpm = MRF32(0x007fbed8u);
+        float unset_rpm = MRF32(0x00784258u);
+        if (override_rpm != unset_rpm && __builtin_isfinite(override_rpm)) rpm = override_rpm;
+    }
+    int gear = (int32_t)rd32(car + 0x434u);
+    if (!__builtin_isfinite(rpm) || rpm < 0.0f || rpm > 32000.0f || gear < 1 || gear > 8) return;
+
+    if (gear != s_mod_shift_last_gear) {
+        s_mod_shift_last_gear = gear;
+        s_mod_shift_armed = 1;
+        s_mod_shift_prev_valid = 0;
+    }
+
+    int maximum = 0;
+    float shift_point = 0.0f, perfect_window = 0.0f;
+    if (!modmenu_shift_window(car, gear, &maximum, &shift_point, &perfect_window) || gear >= maximum) {
+        s_mod_shift_prev_valid = 0;
+        return;
+    }
+
+    /* The hook runs just after a physics step. setGuestKey queues input for
+     * the next step, so predict one frame ahead from the observed RPM slope. */
+    float rpm_delta = s_mod_shift_prev_valid ? rpm - s_mod_shift_prev_rpm : 0.0f;
+    if (!__builtin_isfinite(rpm_delta) || rpm_delta < 0.0f) rpm_delta = 0.0f;
+    if (rpm_delta > 4000.0f) rpm_delta = 4000.0f;
+    float next_rpm = rpm + rpm_delta;
+    s_mod_shift_prev_rpm = rpm;
+    s_mod_shift_prev_valid = 1;
+    if (!__builtin_isfinite(next_rpm) || next_rpm < 0.0f || next_rpm > 32000.0f) return;
+
+    volatile float distance = shift_point - next_rpm;
+    float magnitude = distance < 0.0f ? -distance : distance;
+    if (distance < 0.0f && perfect_window > magnitude && s_mod_shift_armed) {
+        roam_modmenu_key_pulse(roam_modmenu_shift_key());
+        s_mod_shift_armed = 0;
+    }
+}
+
 void roam_game_frame(CPU *c){
     if (!g_inited) init_once(c);
+    modmenu_game_frame();
     if (!O.on) return;
 #ifndef ROAM_HOST_WIN
     solid_follow();
