@@ -252,6 +252,8 @@ public final class GameActivity extends NativeActivity {
         final long[] previousFrame = {-1L};
         final float[] previousRpm = {-1.0f};
         final float[] rpmDeltaPerFrame = {0.0f};
+        /* Reuse one buffer; avoid allocating a JNI float array on every poll. */
+        final float[] telemetrySample = new float[34];
         final Runnable[] loop = new Runnable[1];
 
         loop[0] = () -> {
@@ -261,7 +263,8 @@ public final class GameActivity extends NativeActivity {
                 return;
             }
             try {
-                float[] sample = io.mininxd.nfsu2.net.RoamNativeBridge.nativeGetGameTelemetry();
+                io.mininxd.nfsu2.net.RoamNativeBridge.nativeReadGameTelemetry(telemetrySample);
+                float[] sample = telemetrySample;
                 boolean matchingDrag = sample != null && sample.length >= 34
                         && sample[0] > 0.5f
                         && Math.round(sample[1]) == 6
@@ -382,7 +385,7 @@ public final class GameActivity extends NativeActivity {
             } catch (Throwable error) {
                 GameLog.w("NFSU2-ModMenu", "Auto Shift telemetry failed: " + error.getClass().getSimpleName());
             }
-            handler.postDelayed(loop[0], 4L);
+            handler.postDelayed(loop[0], 8L);
         };
 
         autoShiftHandler = handler;
