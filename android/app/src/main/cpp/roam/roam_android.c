@@ -1680,22 +1680,34 @@ static void lobby_frame_tick(void) {
 
 static _Atomic int s_tick_in_progress = 0;
 __attribute__((visibility("default"))) void nfs_roam_frame_tick(void) {
-    /* Telemetry needs the guest memory image, but not an active guest call stack.
-     * Preserve the older working build's memory-ready / stack-ready separation. */
+    /* Keep the automatic shift path on the game thread. The Java UI only
+     * publishes configuration and never polls guest memory. */
     const int stack_ready = roam_android_init_symbols();
-    if (!g_p_mem_base || !*g_p_mem_base) return;
+    if (!g_p_mem_base || !*g_p_mem_base) {
+        modmenu_release_key();
+        modmenu_auto_shift_reset();
+        return;
+    }
     if (atomic_exchange(&s_tick_in_progress, 1) != 0) return;
     const uint32_t frame_tick = atomic_fetch_add(&g_mod_frame_ticks, 1) + 1u;
+    const int mod_flags = roam_modmenu_flags();
     atomic_store(&g_mod_memory_ready, 1);
     atomic_store(&g_mod_stack_ready, (g_p_esp && *g_p_esp) ? 1 : 0);
-    /* Diagnostic telemetry is independent of native shifting. Refresh it at
-     * half the render rate to reduce guest-memory inspection overhead. */
-    if ((frame_tick & 1u) == 0u) mod_telemetry_update();
+
+    /* Telemetry is sampled once per rendered frame only while Auto Shift is
+     * enabled. This replaces the former 4 ms Java-main-thread polling loop. */
+    if (mod_flags & NFSU2_MOD_AUTO_SHIFT) mod_telemetry_update();
+
+    /* Release any previous one-frame pulse even when the guest stack is not
+     * currently available, so an input can never remain stuck across pauses. */
+    modmenu_release_key();
     if (!stack_ready || !g_p_esp || !*g_p_esp) {
+        if (!(mod_flags & NFSU2_MOD_AUTO_SHIFT)) modmenu_auto_shift_reset();
         atomic_store(&s_tick_in_progress, 0);
         return;
     }
-    modmenu_release_key();
+    if (mod_flags & NFSU2_MOD_AUTO_SHIFT) modmenu_auto_shift_frame(frame_tick);
+    else modmenu_auto_shift_reset();
     pace_frame();
     static int s_perf_bound = 0;
     if (!s_perf_bound || (g_frame_count % 300) == 0) {
