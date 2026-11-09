@@ -469,6 +469,132 @@ void roam_modmenu_key_pulse(int scan) {
     s_modmenu_pressed_key = scan; /* released at the next frame hook */
 }
 
+
+/* Native, render-frame Smart Perfect Shift controller.
+ * The UI only publishes flags/key scan. No Java polling or guest-memory reads
+ * are performed on the Android main thread. */
+static int      s_auto_shift_car_type = -1;
+static int      s_auto_shift_observed_gear = -1;
+static int      s_auto_shift_attempt_gear = -1;
+static uint32_t s_auto_shift_last_pulse_frame = 0;
+static uint32_t s_auto_shift_previous_frame = 0;
+static float    s_auto_shift_previous_rpm = -1.0f;
+static float    s_auto_shift_rpm_slope = 0.0f;
+static int      s_auto_shift_attempts = 0;
+static int      s_auto_shift_wait_for_rpm_drop = 0;
+
+static void modmenu_auto_shift_reset(void) {
+    s_auto_shift_car_type = -1;
+    s_auto_shift_observed_gear = -1;
+    s_auto_shift_attempt_gear = -1;
+    s_auto_shift_last_pulse_frame = 0;
+    s_auto_shift_previous_frame = 0;
+    s_auto_shift_previous_rpm = -1.0f;
+    s_auto_shift_rpm_slope = 0.0f;
+    s_auto_shift_attempts = 0;
+    s_auto_shift_wait_for_rpm_drop = 0;
+}
+
+static void modmenu_auto_shift_frame(uint32_t frame_tick) {
+    if ((roam_modmenu_flags() & NFSU2_MOD_AUTO_SHIFT) == 0) {
+        modmenu_auto_shift_reset();
+        return;
+    }
+
+    jfloat sample[34];
+    pthread_mutex_lock(&g_mod_telemetry_mu);
+    memcpy(sample, g_mod_telemetry, sizeof(sample));
+    pthread_mutex_unlock(&g_mod_telemetry_mu);
+
+    /* Only act in a validated, running Career Drag event. */
+    if (sample[0] <= 0.5f || sample[1] != 6.0f || sample[8] != 4.0f
+            || sample[12] <= 0.5f || sample[33] <= 0.5f) {
+        modmenu_auto_shift_reset();
+        return;
+    }
+
+    const int car_type = (int)sample[23];
+    const int gear = (int)sample[5];              /* Car gear: 1 = first */
+    const int drive_gear = (int)sample[30];        /* DriveTrain: 2 = first */
+    const int forward_gears = (int)sample[29];
+    const float rpm = sample[3];
+    const float throttle = sample[4];
+    const float shift_up = sample[27];
+    const float perfect_range = sample[28];
+
+    if (car_type < 0 || gear < 1 || forward_gears < 1 || forward_gears > 6
+            || gear > forward_gears || drive_gear != gear + 1
+            || !isfinite(rpm) || rpm < 300.0f || rpm > 20000.0f
+            || !isfinite(shift_up) || shift_up < 1000.0f || shift_up > 20000.0f
+            || !isfinite(perfect_range) || perfect_range <= 0.0f || perfect_range > 5000.0f) {
+        modmenu_auto_shift_reset();
+        return;
+    }
+
+    if (s_auto_shift_car_type != car_type) {
+        modmenu_auto_shift_reset();
+        s_auto_shift_car_type = car_type;
+        s_auto_shift_observed_gear = gear;
+    } else if (s_auto_shift_observed_gear != gear) {
+        const int shifted_up = s_auto_shift_attempt_gear == s_auto_shift_observed_gear
+                && gear > s_auto_shift_observed_gear;
+        s_auto_shift_observed_gear = gear;
+        s_auto_shift_attempt_gear = -1;
+        s_auto_shift_last_pulse_frame = 0;
+        s_auto_shift_attempts = 0;
+        s_auto_shift_wait_for_rpm_drop = shifted_up ? 1 : 0;
+        s_auto_shift_previous_rpm = -1.0f;
+        s_auto_shift_rpm_slope = 0.0f;
+    }
+
+    /* Predict one game frame ahead so the input lands inside the game's
+     * exact per-gear Perfect Shift band rather than at a fixed RPM percent. */
+    if (s_auto_shift_previous_frame != 0u && frame_tick > s_auto_shift_previous_frame) {
+        const uint32_t elapsed_frames = frame_tick - s_auto_shift_previous_frame;
+        float slope = (rpm - s_auto_shift_previous_rpm) / (float)elapsed_frames;
+        if (!isfinite(slope) || slope < 0.0f) slope = 0.0f;
+        if (slope > 2500.0f) slope = 2500.0f;
+        s_auto_shift_rpm_slope = slope;
+    }
+    s_auto_shift_previous_frame = frame_tick;
+    s_auto_shift_previous_rpm = rpm;
+
+    const float reset_margin = fmaxf(150.0f, perfect_range * 0.15f);
+    if (rpm < shift_up - reset_margin) {
+        s_auto_shift_wait_for_rpm_drop = 0;
+        s_auto_shift_attempts = 0;
+        s_auto_shift_attempt_gear = -1;
+        s_auto_shift_last_pulse_frame = 0;
+    }
+
+    if (s_auto_shift_wait_for_rpm_drop
+            || !isfinite(throttle) || throttle < 0.25f || throttle > 1.5f
+            || s_auto_shift_attempts >= 3) {
+        return;
+    }
+
+    /* Leave at least two complete frames between retry pulses. */
+    if (s_auto_shift_attempt_gear == gear
+            && (uint32_t)(frame_tick - s_auto_shift_last_pulse_frame) < 3u) {
+        return;
+    }
+
+    float predicted_rpm = rpm + s_auto_shift_rpm_slope;
+    if (!isfinite(predicted_rpm) || predicted_rpm < 0.0f || predicted_rpm > 22000.0f)
+        predicted_rpm = rpm;
+
+    const float window_end = shift_up + perfect_range;
+    if (predicted_rpm >= shift_up && predicted_rpm < window_end) {
+        const int shift_scan = roam_modmenu_shift_key();
+        if (shift_scan > 0 && shift_scan < 256) {
+            roam_modmenu_key_pulse(shift_scan);
+            s_auto_shift_attempt_gear = gear;
+            s_auto_shift_last_pulse_frame = frame_tick;
+            s_auto_shift_attempts++;
+        }
+    }
+}
+
 /* Quick Chat state */
 static atomic_int      g_say_pick = -1;
 static int             g_qc_open = -1;
