@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.graphics.Color;
 import android.widget.CheckBox;
+import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -40,6 +41,9 @@ final class NFSU2ModMenu {
     }
 
     File getConfigFile() { return configFile; }
+    boolean isAutoShiftEnabled() {
+        return masterEnabled && (autoShift || raceAssist);
+    }
 
     void loadAndApply() {
         readConfig();
@@ -102,7 +106,8 @@ final class NFSU2ModMenu {
         refreshShiftKey();
         int flags = 0;
         if (masterEnabled) {
-            if (autoShift || raceAssist) flags |= FLAG_AUTO_SHIFT;
+            /* Auto Shift is driven by the telemetry controller in GameActivity.
+             * Keep the native frame hook for Infinite NOS only. */
             if (infiniteNos || raceAssist) flags |= FLAG_INFINITE_NOS;
         }
         try {
@@ -148,6 +153,46 @@ final class NFSU2ModMenu {
         note.setPadding(0, dp(8), 0, 0);
         body.addView(note);
 
+        TextView telemetryStatus = new TextView(activity);
+        telemetryStatus.setText("Telemetri belum dibaca. Baca saat mobil sedang berjalan di Career Drag.");
+        telemetryStatus.setTextColor(0xffbdbdbd);
+        telemetryStatus.setTextSize(11);
+        telemetryStatus.setPadding(0, dp(8), 0, dp(2));
+        Button telemetryButton = new Button(activity);
+        telemetryButton.setText("Baca Telemetri Game");
+        telemetryButton.setAllCaps(false);
+        telemetryButton.setOnClickListener(view -> {
+            try {
+                float[] t = RoamNativeBridge.nativeGetGameTelemetry();
+                if (t == null || t.length < 33) {
+                    telemetryStatus.setText("Telemetry bridge tidak tersedia atau belum menghasilkan data.");
+                    return;
+                }
+                int flow = Math.round(t[1]);
+                int raceState = Math.round(t[8]);
+                int raceType = Math.round(t[9]);
+                int gear = Math.round(t[5]);
+                int driveGear = Math.round(t[30]);
+                int forwardGears = Math.round(t[29]);
+                boolean windowValid = Float.isFinite(t[27]) && Float.isFinite(t[28])
+                        && t[27] >= 1000.0f && t[28] > 0.0f;
+                String window = windowValid
+                        ? String.format(java.util.Locale.US, "%.0f–%.0f RPM", t[27], t[27] + t[28])
+                        : "tidak terbaca";
+                String status = String.format(java.util.Locale.US,
+                        "Flow %d | RaceState %d | Type %d | Track %d\nRPM %.0f | Gear %d / Drivetrain %d of %d\nThrottle %.0f%% | Perfect window %s\nFrame %d | CarType %d | Snapshot %s",
+                        flow, raceState, raceType, Math.round(t[10]), t[3], gear, driveGear,
+                        forwardGears, Math.max(0.0f, t[4] * 100.0f), window,
+                        Math.round(t[13]), Math.round(t[23]),
+                        t[0] > 0.5f ? "valid" : "invalid");
+                telemetryStatus.setText(status);
+            } catch (Throwable error) {
+                telemetryStatus.setText("Telemetry read error: " + error.getClass().getSimpleName());
+            }
+        });
+        body.addView(telemetryButton);
+        body.addView(telemetryStatus);
+
         new AlertDialog.Builder(activity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
                 .setTitle("NFSU2 REVIVED – MOD MENU")
                 .setView(body)
@@ -159,6 +204,9 @@ final class NFSU2ModMenu {
                     raceAssist = assist.isChecked();
                     writeConfig();
                     applyNative();
+                    if (activity instanceof GameActivity) {
+                        ((GameActivity) activity).onModMenuSettingsApplied();
+                    }
                     Toast.makeText(activity, "Mod Menu settings saved", Toast.LENGTH_SHORT).show();
                 }).show();
     }
