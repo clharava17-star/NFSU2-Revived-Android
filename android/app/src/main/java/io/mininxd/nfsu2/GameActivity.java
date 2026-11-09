@@ -258,12 +258,12 @@ public final class GameActivity extends NativeActivity {
             }
             try {
                 float[] sample = io.mininxd.nfsu2.net.RoamNativeBridge.nativeGetGameTelemetry();
-                boolean matchingDrag = sample != null && sample.length >= 33
+                boolean matchingDrag = sample != null && sample.length >= 34
                         && sample[0] > 0.5f
                         && Math.round(sample[1]) == 6
                         && Math.round(sample[8]) == 4
-                        && Math.round(sample[9]) == 4
-                        && sample[12] > 0.5f;
+                        && sample[12] > 0.5f
+                        && sample[33] > 0.5f;
 
                 int carType = matchingDrag ? Math.round(sample[23]) : -1;
                 float idleRpm = matchingDrag ? sample[24] : -1.0f;
@@ -304,7 +304,6 @@ public final class GameActivity extends NativeActivity {
                      * 4 ms Java poll. Derive RPM slope only when the frame changes. */
                     if (previousFrame[0] >= 0L && frame > previousFrame[0]
                             && Float.isFinite(previousRpm[0]) && previousRpm[0] >= 0.0f) {
-                        long frameDelta = Math.min(4L, frame - previousFrame[0]);
                         float slope = (rpm - previousRpm[0]) / (float)Math.max(1L, frame - previousFrame[0]);
                         if (!Float.isFinite(slope) || slope < 0.0f) slope = 0.0f;
                         rpmDeltaPerFrame[0] = Math.min(4000.0f, slope);
