@@ -36,6 +36,32 @@ uint32_t  *g_p_edx = NULL;
 recomp_func_t (*g_p_recomp_lookup)(uint32_t va) = NULL;
 int (*g_p_guest_is_readable)(uint32_t va, uint32_t bytes) = NULL;
 static void (*s_modmenu_guest_key)(unsigned, int) = NULL;
+/* Compatibility with v0.15.19's prebuilt libnfsu2_android.so:
+ * it exports setGuestKey(unsigned, bool), not the newer C bridge name. */
+static void (*s_modmenu_guest_key_legacy)(unsigned, _Bool) = NULL;
+
+static void modmenu_resolve_guest_key(void) {
+    if (s_modmenu_guest_key || s_modmenu_guest_key_legacy) return;
+
+    void *h = dlopen("libnfsu2_android.so", RTLD_NOLOAD | RTLD_NOW | RTLD_GLOBAL);
+    if (!h) h = RTLD_DEFAULT;
+
+    void *symbol = dlsym(h, "nfsu2_android_mod_guest_key");
+    if (symbol) {
+        s_modmenu_guest_key = (void (*)(unsigned, int))symbol;
+    } else {
+        /* Verified in the v0.15.19 ARM64 library: _Z11setGuestKeyjb */
+        symbol = dlsym(h, "_Z11setGuestKeyjb");
+        if (symbol) s_modmenu_guest_key_legacy = (void (*)(unsigned, _Bool))symbol;
+    }
+
+    if (h != RTLD_DEFAULT) dlclose(h);
+}
+
+static void modmenu_send_guest_key(unsigned scan, int down) {
+    if (s_modmenu_guest_key) s_modmenu_guest_key(scan, down);
+    else if (s_modmenu_guest_key_legacy) s_modmenu_guest_key_legacy(scan, down != 0);
+}
 
 static int s_probe_pipe[2] = { -1, -1 };
 static pthread_mutex_t s_probe_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -124,7 +150,7 @@ int roam_android_init_symbols(void) {
         g_p_ecx = (uint32_t *)dlsym(h, "g_ecx");
         g_p_edx = (uint32_t *)dlsym(h, "g_edx");
         g_p_guest_is_readable = (int (*)(uint32_t, uint32_t))dlsym(h, "guest_is_readable");
-        s_modmenu_guest_key = (void (*)(unsigned, int))dlsym(h, "nfsu2_android_mod_guest_key");
+        modmenu_resolve_guest_key();
     }
 
     if (g_p_mem_base && *g_p_mem_base != 0 && g_p_esp && *g_p_esp != 0) {
@@ -158,25 +184,17 @@ int roam_modmenu_shift_key(void) { return atomic_load(&s_modmenu_shift_key); }
 
 static void modmenu_release_key(void) {
     if (s_modmenu_pressed_key < 0) return;
-    if (!s_modmenu_guest_key) {
-        void *h = dlopen("libnfsu2_android.so", RTLD_NOLOAD | RTLD_GLOBAL);
-        if (!h) h = RTLD_DEFAULT;
-        s_modmenu_guest_key = (void (*)(unsigned, int))dlsym(h, "nfsu2_android_mod_guest_key");
-    }
-    if (s_modmenu_guest_key) s_modmenu_guest_key((unsigned)s_modmenu_pressed_key, 0);
+    modmenu_resolve_guest_key();
+    modmenu_send_guest_key((unsigned)s_modmenu_pressed_key, 0);
     s_modmenu_pressed_key = -1;
 }
 
 void roam_modmenu_key_pulse(int scan) {
     if (scan <= 0 || scan >= 256) return;
-    if (!s_modmenu_guest_key) {
-        void *h = dlopen("libnfsu2_android.so", RTLD_NOLOAD | RTLD_GLOBAL);
-        if (!h) h = RTLD_DEFAULT;
-        s_modmenu_guest_key = (void (*)(unsigned, int))dlsym(h, "nfsu2_android_mod_guest_key");
-    }
-    if (!s_modmenu_guest_key) return;
+    modmenu_resolve_guest_key();
+    if (!s_modmenu_guest_key && !s_modmenu_guest_key_legacy) return;
     modmenu_release_key();
-    s_modmenu_guest_key((unsigned)scan, 1);
+    modmenu_send_guest_key((unsigned)scan, 1);
     s_modmenu_pressed_key = scan; /* released at the next frame hook */
 }
 
