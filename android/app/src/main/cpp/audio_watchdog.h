@@ -1,0 +1,28 @@
+#pragma once
+#include <cstdint>
+#include <chrono>
+#include <atomic>
+#include "audio_mixer.h"
+
+namespace nfs_audio_watchdog {
+
+// Record a successful AAudio callback render tick.
+void notifyCallbackRendered();
+
+// Service synthetic wall-clock time progression if AAudio callback is delayed or stalled
+// (e.g. during screen recorder attach, incoming call, or audio routing renegotiation).
+void serviceSyntheticClock(PcmMixer& mixer);
+
+// Returns true if audio stream was active but callback has stopped firing for > 250ms.
+bool isCallbackStalled();
+
+// Cooldown tracker for AAudio stream reconnection to avoid audio HAL thrashing.
+bool canAttemptReconnect();
+void recordReconnectAttempt();
+
+// Autonomous background watchdog thread to continuously advance DirectSound synthetic clock
+// even if guest render thread is waiting on audio locks during an incoming call or device switch.
+void startWatchdogThread(PcmMixer& mixer);
+void stopWatchdogThread();
+
+} // namespace nfs_audio_watchdog

@@ -40,7 +40,7 @@ final class RacingControlsView extends View {
     interface Pointer { void touch(float x, float y, int phase); }
 
     // Special controls that do not map to a DirectInput scan code
-    private static final int MODE = -1, TEXT = -2, STICK = -3, EDIT = -5, CHAT = -6;
+    private static final int MODE = -1, TEXT = -2, STICK = -3, EDIT = -5, CHAT = -6, MOD = -7;
     private static final int ROUND = 0, PEDAL = 1, WHEEL = 2, PILL = 3, DPAD = 4;
 
     // nfsu2-web color scheme
@@ -58,6 +58,7 @@ final class RacingControlsView extends View {
     private final Runnable textInput;
     private final Runnable configureTilt;
     private final Runnable configureFrameLimit;
+    private final Runnable openModMenu;
     private String style;
 
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -164,7 +165,7 @@ final class RacingControlsView extends View {
         }
     }
 
-    RacingControlsView(Context context, Keys keys, Runnable textInput, Runnable configureTilt, Runnable configureFrameLimit) {
+    RacingControlsView(Context context, Keys keys, Runnable textInput, Runnable configureTilt, Runnable configureFrameLimit, Runnable openModMenu) {
         super(context);
         this.keys = keys;
         this.textInput = textInput;
@@ -172,6 +173,7 @@ final class RacingControlsView extends View {
         this.style = layouts.getString("style", "classic");
         this.configureTilt = configureTilt;
         this.configureFrameLimit = configureFrameLimit;
+        this.openModMenu = openModMenu;
 
         try {
             int resId = getResources().getIdentifier("nitro", "drawable", getContext().getPackageName());
@@ -403,9 +405,10 @@ final class RacingControlsView extends View {
         float w = getWidth() / scale, h = getHeight() / scale;
         float bottom = h - 16;
 
-        // Top-right header buttons
+        // Header buttons: the Mod Menu stays inside the game overlay.
         add(w - 56, 16, 44, "settings", EDIT);
         add(w - 110, 16, 44, "mode", MODE);
+        add(w - 164, 16, 44, "MOD", MOD);
 
         if (racing) {
             // Top row small buttons (44dp circular)
@@ -472,7 +475,7 @@ final class RacingControlsView extends View {
         if (editing) canvas.drawColor(0x77000000);
 
         for (Control c : controls) {
-            if (controlsHidden && !editing && c.scan != EDIT) continue;
+            if (controlsHidden && !editing && c.scan != EDIT && c.scan != MOD) continue;
             drawControl(canvas, c);
         }
 
@@ -769,6 +772,9 @@ final class RacingControlsView extends View {
                     drawArrow(canvas, cx - s * 0.35f, cy, s * 0.55f, 2);
                     drawArrow(canvas, cx + s * 0.35f, cy, s * 0.55f, 3);
                 }
+                break;
+            case "MOD":
+                glyph(canvas, "MOD", cx, cy, 12f, on);
                 break;
             case "settings":
                 for (int i = -1; i <= 1; ++i) {
@@ -1376,10 +1382,14 @@ final class RacingControlsView extends View {
         if (controlsHidden) {
             if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN) {
                 Control c = hit(e.getX(index), e.getY(index));
-                if (c != null && c.scan == EDIT) {
+                if (c != null && (c.scan == EDIT || c.scan == MOD)) {
                     releaseAll();
-                    setEditing(true);
-                    selected = null;
+                    if (c.scan == EDIT) {
+                        setEditing(true);
+                        selected = null;
+                    } else if (openModMenu != null) {
+                        openModMenu.run();
+                    }
                     invalidate();
                     return true;
                 }
@@ -1479,6 +1489,9 @@ final class RacingControlsView extends View {
                     releaseAll();
                     setEditing(true);
                     selected = null;
+                } else if (c.scan == MOD) {
+                    releaseAll();
+                    if (openModMenu != null) openModMenu.run();
                 }
                 performClick();
             }

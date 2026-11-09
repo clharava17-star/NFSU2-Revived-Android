@@ -42,6 +42,9 @@ public final class RoamNativeBridge {
     public static native void nativeRoamHorn(boolean held);
     public static native void nativeSetFrameLimit(int fps);
     public static native int[] nativeGetActionKeys();
+    /** Latest per-frame game telemetry: 34 floats documented by the native bridge. */
+    public static native float[] nativeGetGameTelemetry();
+    public static native void nativeSetModCheats(int flags, int shiftUpScan);
 
     /**
      * Called from C roam_android.c when the engine wants to transmit a packet.

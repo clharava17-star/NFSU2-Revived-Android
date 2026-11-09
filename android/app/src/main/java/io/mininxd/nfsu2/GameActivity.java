@@ -38,12 +38,57 @@ public final class GameActivity extends NativeActivity {
     private boolean foreground;
     private TextView status;
     private PopupWindow statusWindow;
+
+    private android.media.AudioManager audioManager;
+    private final android.media.AudioManager.OnAudioFocusChangeListener audioFocusListener = focusChange -> {
+        switch (focusChange) {
+            case android.media.AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:
+            case android.media.AudioManager.AUDIOFOCUS_LOSS:
+                GameLog.w("Audio", "Audio focus lost (" + focusChange + "), incoming call or media switch active");
+                break;
+            case android.media.AudioManager.AUDIOFOCUS_GAIN:
+            case android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT:
+            case android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK:
+                GameLog.i("Audio", "Audio focus restored (" + focusChange + ")");
+                break;
+        }
+    };
+
+    private void requestGameAudioFocus() {
+        try {
+            if (audioManager == null) {
+                audioManager = (android.media.AudioManager) getSystemService(AUDIO_SERVICE);
+            }
+            if (audioManager != null) {
+                if (Build.VERSION.SDK_INT >= 26) {
+                    android.media.AudioFocusRequest request = new android.media.AudioFocusRequest.Builder(android.media.AudioManager.AUDIOFOCUS_GAIN)
+                            .setAudioAttributes(new android.media.AudioAttributes.Builder()
+                                    .setUsage(android.media.AudioAttributes.USAGE_GAME)
+                                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC)
+                                    .build())
+                            .setOnAudioFocusChangeListener(audioFocusListener)
+                            .build();
+                    audioManager.requestAudioFocus(request);
+                } else {
+                    audioManager.requestAudioFocus(audioFocusListener, android.media.AudioManager.STREAM_MUSIC, android.media.AudioManager.AUDIOFOCUS_GAIN);
+                }
+            }
+        } catch (Throwable t) {
+            GameLog.w("Audio", "Could not request audio focus: " + t.getMessage());
+        }
+    }
     private PopupWindow controlsWindow;
     private DiagnosticOverlay diagnosticOverlay;
     private RacingControlsView touchControls;
+    private NFSU2ModMenu modMenu;
     private boolean statusHidden;
     private Runnable statusHideTask;
     private final boolean[] touchKeys=new boolean[256],sentKeys=new boolean[256];
+    /* Auto Shift follows the same NativeActivity key path as physical controls. */
+    private int keyShiftUp = 0x2a;
+    private Handler autoShiftHandler;
+    private Runnable autoShiftPoll;
+    private int autoShiftPressedScan = -1;
     private boolean tiltLeft,tiltRight,tiltEnabled,tiltCalibrate=true;
     private float tiltFiltered,tiltNeutral,tiltSensitivity=1;
     private boolean tiltInvert;
@@ -162,6 +207,186 @@ public final class GameActivity extends NativeActivity {
         try { nativeKeyNav(scan, down); } catch (Throwable ignored) {}
     }
     private static native void nativeKeyNav(int scan, boolean down);
+
+    void onModMenuSettingsApplied() {
+        updateAutoShiftController();
+    }
+
+    private void stopAutoShiftController() {
+        Handler handler = autoShiftHandler;
+        Runnable poll = autoShiftPoll;
+        autoShiftHandler = null;
+        autoShiftPoll = null;
+        if (handler != null) handler.removeCallbacksAndMessages(null);
+        if (autoShiftPressedScan >= 0) {
+            nativeKey(autoShiftPressedScan, false);
+            autoShiftPressedScan = -1;
+        }
+    }
+
+    private void updateAutoShiftController() {
+        stopAutoShiftController();
+        if (!foreground || isFinishing() || isDestroyed() || modMenu == null
+                || !modMenu.isAutoShiftEnabled()
+                || !io.mininxd.nfsu2.net.RoamNativeBridge.isLoaded()) return;
+
+        try {
+            int[] keys = io.mininxd.nfsu2.net.RoamNativeBridge.nativeGetActionKeys();
+            if (keys != null && keys.length > 6 && keys[6] > 0 && keys[6] < 256) {
+                keyShiftUp = keys[6];
+            }
+        } catch (Throwable ignored) {}
+
+        final int shiftScan = keyShiftUp > 0 ? keyShiftUp : 0x2a;
+        final Handler handler = new Handler(Looper.getMainLooper());
+        final int[] pendingGear = {-1};
+        final long[] pendingSince = {0L};
+        final long[] lastShiftAt = {0L};
+        final boolean[] waitForNextGearRpmDrop = {false};
+        final int[] failedShiftAttempts = {0};
+        final int MAX_SHIFT_ATTEMPTS = 3;
+        final long SHIFT_CONFIRM_TIMEOUT_MS = 120L;
+        final long SHIFT_RETRY_COOLDOWN_MS = 125L;
+        final int[] observedGear = {-1};
+        final int[] observedCarType = {-1};
+        final long[] previousFrame = {-1L};
+        final float[] previousRpm = {-1.0f};
+        final float[] rpmDeltaPerFrame = {0.0f};
+        final Runnable[] loop = new Runnable[1];
+
+        loop[0] = () -> {
+            if (autoShiftHandler != handler || autoShiftPoll != loop[0]) return;
+            if (!foreground || isFinishing() || isDestroyed()) {
+                handler.postDelayed(loop[0], 100L);
+                return;
+            }
+            try {
+                float[] sample = io.mininxd.nfsu2.net.RoamNativeBridge.nativeGetGameTelemetry();
+                boolean matchingDrag = sample != null && sample.length >= 34
+                        && sample[0] > 0.5f
+                        && Math.round(sample[1]) == 6
+                        && Math.round(sample[8]) == 4
+                        && sample[12] > 0.5f
+                        && sample[33] > 0.5f;
+
+                int carType = matchingDrag ? Math.round(sample[23]) : -1;
+                float idleRpm = matchingDrag ? sample[24] : -1.0f;
+                float maxRpm = matchingDrag ? sample[25] : -1.0f;
+                float shiftUpRpm = matchingDrag ? sample[27] : -1.0f;
+                float perfectRangeRpm = matchingDrag ? sample[28] : -1.0f;
+                int forwardGears = matchingDrag ? Math.round(sample[29]) : 0;
+                int drivetrainGear = matchingDrag ? Math.round(sample[30]) : -1;
+                int gear = matchingDrag ? Math.round(sample[5]) : -99;
+
+                boolean validVehicle = carType >= 0
+                        && Float.isFinite(idleRpm) && Float.isFinite(maxRpm)
+                        && idleRpm >= 300.0f && maxRpm >= idleRpm + 1000.0f
+                        && maxRpm <= 22000.0f;
+                boolean validPerfectWindow = Float.isFinite(shiftUpRpm)
+                        && Float.isFinite(perfectRangeRpm)
+                        && shiftUpRpm >= 1000.0f && shiftUpRpm <= 20000.0f
+                        && perfectRangeRpm > 0.0f && perfectRangeRpm <= 5000.0f
+                        && forwardGears >= 1 && forwardGears <= 6
+                        && drivetrainGear >= 2 && drivetrainGear <= forwardGears
+                        && gear == drivetrainGear;
+
+                if (!matchingDrag || !validVehicle || !validPerfectWindow) {
+                    pendingGear[0] = -1;
+                    waitForNextGearRpmDrop[0] = false;
+                    failedShiftAttempts[0] = 0;
+                    observedGear[0] = -1;
+                    observedCarType[0] = -1;
+                    previousFrame[0] = -1L;
+                    previousRpm[0] = -1.0f;
+                    rpmDeltaPerFrame[0] = 0.0f;
+                } else {
+                    float rpm = sample[3];
+                    float throttle = sample[4];
+                    long frame = Math.round(sample[13]);
+                    long now = android.os.SystemClock.elapsedRealtime();
+
+                    /* Telemetry is refreshed on the render/game frame, not on every
+                     * 4 ms Java poll. Derive RPM slope only when the frame changes. */
+                    if (previousFrame[0] >= 0L && frame > previousFrame[0]
+                            && Float.isFinite(previousRpm[0]) && previousRpm[0] >= 0.0f) {
+                        float slope = (rpm - previousRpm[0]) / (float)Math.max(1L, frame - previousFrame[0]);
+                        if (!Float.isFinite(slope) || slope < 0.0f) slope = 0.0f;
+                        rpmDeltaPerFrame[0] = Math.min(4000.0f, slope);
+                    }
+                    if (frame > previousFrame[0]) {
+                        previousFrame[0] = frame;
+                        previousRpm[0] = rpm;
+                    }
+                    float predictedRpm = rpm + rpmDeltaPerFrame[0];
+                    if (!Float.isFinite(predictedRpm) || predictedRpm < 0.0f || predictedRpm > 22000.0f) {
+                        predictedRpm = rpm;
+                    }
+
+                    boolean carChanged = observedCarType[0] != carType;
+                    boolean gearChanged = observedGear[0] != gear;
+                    if (carChanged) {
+                        pendingGear[0] = -1;
+                        waitForNextGearRpmDrop[0] = false;
+                        failedShiftAttempts[0] = 0;
+                        observedCarType[0] = carType;
+                        observedGear[0] = gear;
+                        lastShiftAt[0] = now;
+                    } else if (gearChanged) {
+                        boolean acceptedUpshift = pendingGear[0] >= 2 && gear > pendingGear[0];
+                        pendingGear[0] = -1;
+                        waitForNextGearRpmDrop[0] = acceptedUpshift;
+                        failedShiftAttempts[0] = 0;
+                        observedGear[0] = gear;
+                        rpmDeltaPerFrame[0] = 0.0f;
+                    }
+
+                    if (pendingGear[0] >= 2
+                            && now - pendingSince[0] >= SHIFT_CONFIRM_TIMEOUT_MS) {
+                        pendingGear[0] = -1;
+                        failedShiftAttempts[0] = Math.min(
+                                MAX_SHIFT_ATTEMPTS, failedShiftAttempts[0] + 1);
+                        /* Keep a missed pulse from locking Auto Shift out for the
+                         * rest of the gear. Retry only while the current gear's
+                         * exact Perfect Shift window is still open. */
+                        waitForNextGearRpmDrop[0] =
+                                failedShiftAttempts[0] >= MAX_SHIFT_ATTEMPTS;
+                    }
+                    if (waitForNextGearRpmDrop[0] && rpm < shiftUpRpm) {
+                        waitForNextGearRpmDrop[0] = false;
+                        failedShiftAttempts[0] = 0;
+                    }
+
+                    boolean accelerating = throttle >= 0.25f && throttle <= 1.5f
+                            && rpm > 0.0f && gear >= 2 && gear <= forwardGears;
+                    float windowEnd = shiftUpRpm + perfectRangeRpm;
+                    boolean predictedPerfectWindow = predictedRpm >= shiftUpRpm
+                            && predictedRpm < windowEnd;
+
+                    if (pendingGear[0] < 0 && !waitForNextGearRpmDrop[0]
+                            && failedShiftAttempts[0] < MAX_SHIFT_ATTEMPTS
+                            && accelerating && predictedPerfectWindow
+                            && now - lastShiftAt[0] >= SHIFT_RETRY_COOLDOWN_MS) {
+                        pendingGear[0] = gear;
+                        pendingSince[0] = now;
+                        lastShiftAt[0] = now;
+                        nativeKey(shiftScan, true);
+                        autoShiftPressedScan = shiftScan;
+                        handler.postDelayed(() -> {
+                            nativeKey(shiftScan, false);
+                            if (autoShiftPressedScan == shiftScan) autoShiftPressedScan = -1;
+                        }, 45L);
+                    }
+                }
+            } catch (Throwable error) {
+                GameLog.w("NFSU2-ModMenu", "Auto Shift telemetry failed: " + error.getClass().getSimpleName());
+            }
+            handler.postDelayed(loop[0], 4L);
+        };
+
+        autoShiftHandler = handler;
+        autoShiftPoll = loop[0];
+        handler.post(loop[0]);
+    }
     private static boolean nativeDrivingControls() { return com.nfsu2.androidevolved.GameActivity.nativeDrivingControls(); }
     private static boolean nativeGamepadUsed() { return com.nfsu2.androidevolved.GameActivity.nativeGamepadUsed(); }
     private static void nativeTypeText(String value, boolean replace) { com.nfsu2.androidevolved.GameActivity.nativeTypeText(value, replace); }
@@ -252,6 +477,9 @@ public final class GameActivity extends NativeActivity {
                 }).setNegativeButton("Cancel",null).show();
     }
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
+    private void showNfsu2ModMenu() {
+        if (modMenu != null && !isFinishing()) modMenu.show();
+    }
     private void showTextInput() {
         EditText name = new EditText(this);
         name.setSingleLine(true);
@@ -340,6 +568,12 @@ public final class GameActivity extends NativeActivity {
 
             boolean hiddenRaces = GameOptions.isCheatEnabled(this, "hidden_races");
             android.system.Os.setenv("NFSU2_SHOW_HIDDEN_RACES", hiddenRaces ? "1" : "0", true);
+
+            boolean dumbAI = GameOptions.isCheatEnabled(this, "dumb_ai");
+            android.system.Os.setenv("NFSU2_DUMB_AI", dumbAI ? "1" : "0", true);
+
+            boolean extraOptions = GameOptions.isExtraOptionsEnabled(this);
+            android.system.Os.setenv("NFSU2_EXTRA_OPTIONS", extraOptions ? "1" : "0", true);
 
             android.system.Os.setenv("NFSU2_AUTOSAVE", "1", true);
 
@@ -443,7 +677,9 @@ public final class GameActivity extends NativeActivity {
         statusWindow = new PopupWindow(status, ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT, false);
         statusWindow.setTouchable(false);
-        touchControls = new RacingControlsView(this, this::setTouchKey, this::showTextInput,this::showTiltOptions,this::showFrameLimitOptions);
+        modMenu = new NFSU2ModMenu(this);
+        modMenu.loadAndApply();
+        touchControls = new RacingControlsView(this, this::setTouchKey, this::showTextInput,this::showTiltOptions,this::showFrameLimitOptions,this::showNfsu2ModMenu);
         touchControls.setPointer(GameActivity::nativePointer);
         touchControls.setOnEditingChangeListener(editing -> {
             if (diagnosticOverlay != null) {
@@ -532,7 +768,8 @@ public final class GameActivity extends NativeActivity {
         if (text != null) {
             GameLog.i("Status", text);
             if (text.contains("halted") || text.contains("detenido") || text.contains("Error")
-                    || text.contains("failed") || text.contains("terminada") || text.contains("finished")) {
+                    || text.contains("failed") || text.contains("terminada") || text.contains("finished")
+                    || text.contains("stall") || text.contains("freeze")) {
                 GameLog.logHalt(this, text);
             }
         }
@@ -597,6 +834,8 @@ public final class GameActivity extends NativeActivity {
     }
     @Override protected void onPause() {
         foreground=false;
+        stopAutoShiftController();
+        if (modMenu != null) modMenu.suspend();
         stopCompanionTicker();
         holdLanBroadcasts(false);
         updateTiltSensor();
@@ -609,6 +848,9 @@ public final class GameActivity extends NativeActivity {
     @Override protected void onResume() {
         super.onResume();
         foreground=true;
+        if (modMenu != null) modMenu.loadAndApply();
+        updateAutoShiftController();
+        requestGameAudioFocus();
         startCompanionTicker();
         holdLanBroadcasts(true);
         updateTiltSensor();
@@ -669,10 +911,14 @@ public final class GameActivity extends NativeActivity {
     public boolean onGenericMotionEvent(android.view.MotionEvent event) {
         if ((event.getSource() & android.view.InputDevice.SOURCE_JOYSTICK) == android.view.InputDevice.SOURCE_JOYSTICK
                 && event.getAction() == android.view.MotionEvent.ACTION_MOVE) {
-            float z = event.getAxisValue(android.view.MotionEvent.AXIS_Z);
-            float rz = event.getAxisValue(android.view.MotionEvent.AXIS_RZ);
-            if (Math.abs(z) > 0.15f || Math.abs(rz) > 0.15f) {
-                AdhocRoamClient.handleRightStick(z, rz);
+            float rx = event.getAxisValue(android.view.MotionEvent.AXIS_Z);
+            float ry = event.getAxisValue(android.view.MotionEvent.AXIS_RZ);
+            if (Math.abs(rx) < 0.01f && Math.abs(ry) < 0.01f) {
+                rx = event.getAxisValue(android.view.MotionEvent.AXIS_RX);
+                ry = event.getAxisValue(android.view.MotionEvent.AXIS_RY);
+            }
+            if (Math.abs(rx) > 0.15f || Math.abs(ry) > 0.15f) {
+                AdhocRoamClient.handleRightStick(rx, ry);
             } else {
                 AdhocRoamClient.handleRightStick(0f, 0f);
             }
@@ -681,6 +927,7 @@ public final class GameActivity extends NativeActivity {
     }
 
     @Override protected void onDestroy() {
+        stopAutoShiftController();
         super.onDestroy();
         stopCompanionTicker();
         if (diagnosticOverlay != null) diagnosticOverlay.stop();
