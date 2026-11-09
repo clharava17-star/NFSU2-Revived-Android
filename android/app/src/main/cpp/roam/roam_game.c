@@ -7947,6 +7947,9 @@ static uint32_t s_mod_shift_car = 0;
 static int s_mod_shift_last_gear = -1;
 static int s_mod_shift_prev_valid = 0;
 static float s_mod_shift_prev_rpm = 0.0f;
+static uint32_t s_mod_shift_frame = 0;
+static uint32_t s_mod_shift_last_pulse_frame = 0;
+static int s_mod_shift_attempts = 0;
 
 static void modmenu_reset_shift_state(void) {
     s_mod_shift_armed = 1;
@@ -7954,6 +7957,8 @@ static void modmenu_reset_shift_state(void) {
     s_mod_shift_last_gear = -1;
     s_mod_shift_prev_valid = 0;
     s_mod_shift_prev_rpm = 0.0f;
+    s_mod_shift_last_pulse_frame = 0;
+    s_mod_shift_attempts = 0;
 }
 
 static int modmenu_shift_window(uint32_t car, int gear, int *max_gear, float *point, float *perfect_window) {
@@ -7991,6 +7996,7 @@ static int modmenu_shift_window(uint32_t car, int gear, int *max_gear, float *po
 }
 
 static void modmenu_game_frame(void) {
+    const uint32_t frame = ++s_mod_shift_frame;
     int flags = roam_modmenu_flags();
     /* This menu intentionally never changes online / LAN multiplayer state. */
     if (!flags || O.on || (rd32(G_GAMEMODE) & 0x200u)) {
@@ -8021,6 +8027,8 @@ static void modmenu_game_frame(void) {
     if (!(flags & NFSU2_MOD_AUTO_SHIFT)) {
         s_mod_shift_armed = 1;
         s_mod_shift_prev_valid = 0;
+        s_mod_shift_last_pulse_frame = 0;
+        s_mod_shift_attempts = 0;
         return;
     }
 
@@ -8031,6 +8039,8 @@ static void modmenu_game_frame(void) {
         s_mod_shift_car = car;
         s_mod_shift_last_gear = -1;
         s_mod_shift_prev_valid = 0;
+        s_mod_shift_last_pulse_frame = 0;
+        s_mod_shift_attempts = 0;
         return;
     }
     if (!ok(0x0089e7d8u, 0u) || !ok(0x00890108u, 3u)) return;
@@ -8041,6 +8051,8 @@ static void modmenu_game_frame(void) {
         s_mod_shift_armed = 1;
         s_mod_shift_last_gear = -1;
         s_mod_shift_prev_valid = 0;
+        s_mod_shift_last_pulse_frame = 0;
+        s_mod_shift_attempts = 0;
     }
     if (!ok(car, 0x444u)) return;
 
@@ -8057,6 +8069,8 @@ static void modmenu_game_frame(void) {
         s_mod_shift_last_gear = gear;
         s_mod_shift_armed = 1;
         s_mod_shift_prev_valid = 0;
+        s_mod_shift_last_pulse_frame = 0;
+        s_mod_shift_attempts = 0;
     }
 
     int maximum = 0;
@@ -8078,9 +8092,32 @@ static void modmenu_game_frame(void) {
 
     volatile float distance = shift_point - next_rpm;
     float magnitude = distance < 0.0f ? -distance : distance;
-    if (distance < 0.0f && perfect_window > magnitude && s_mod_shift_armed) {
-        roam_modmenu_key_pulse(roam_modmenu_shift_key());
+
+    /* A missed key pulse must not disarm this gear for the whole race.
+     * Retry every three game frames, up to three accepted pulses, while the
+     * exact Perfect Shift band is still open. Reset attempts after RPM falls
+     * safely below the current gear's shift point. */
+    float reset_margin = perfect_window * 0.15f;
+    if (reset_margin < 150.0f) reset_margin = 150.0f;
+    if (rpm < shift_point - reset_margin) {
+        s_mod_shift_attempts = 0;
+        s_mod_shift_armed = 1;
+        s_mod_shift_last_pulse_frame = 0;
+    }
+    if (!s_mod_shift_armed && s_mod_shift_attempts < 3
+            && (uint32_t)(frame - s_mod_shift_last_pulse_frame) >= 3u) {
+        s_mod_shift_armed = 1;
+    }
+
+    if (distance < 0.0f && perfect_window > magnitude
+            && s_mod_shift_armed && s_mod_shift_attempts < 3) {
+        /* If the legacy guest key bridge is not ready yet, leave the attempt
+         * count untouched and retry after the same short cooldown. */
+        if (roam_modmenu_key_pulse(roam_modmenu_shift_key())) {
+            s_mod_shift_attempts++;
+        }
         s_mod_shift_armed = 0;
+        s_mod_shift_last_pulse_frame = frame;
     }
 }
 
