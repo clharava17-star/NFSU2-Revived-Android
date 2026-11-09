@@ -106,8 +106,7 @@ final class NFSU2ModMenu {
         refreshShiftKey();
         int flags = 0;
         if (masterEnabled) {
-            /* Auto Shift is driven by the telemetry controller in GameActivity.
-             * Keep the native frame hook for Infinite NOS only. */
+            if (autoShift || raceAssist) flags |= FLAG_AUTO_SHIFT;
             if (infiniteNos || raceAssist) flags |= FLAG_INFINITE_NOS;
         }
         try {
