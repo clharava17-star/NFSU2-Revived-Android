@@ -3,6 +3,7 @@
 
 #include "roam_host_android.h"
 #include "roam_core.h"
+#include "roam_modmenu.h"
 #include "roam_plat.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,6 +35,7 @@ uint32_t  *g_p_ecx = NULL;
 uint32_t  *g_p_edx = NULL;
 recomp_func_t (*g_p_recomp_lookup)(uint32_t va) = NULL;
 int (*g_p_guest_is_readable)(uint32_t va, uint32_t bytes) = NULL;
+static void (*s_modmenu_guest_key)(unsigned, int) = NULL;
 
 static int s_probe_pipe[2] = { -1, -1 };
 static pthread_mutex_t s_probe_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -122,6 +124,7 @@ int roam_android_init_symbols(void) {
         g_p_ecx = (uint32_t *)dlsym(h, "g_ecx");
         g_p_edx = (uint32_t *)dlsym(h, "g_edx");
         g_p_guest_is_readable = (int (*)(uint32_t, uint32_t))dlsym(h, "guest_is_readable");
+        s_modmenu_guest_key = (void (*)(unsigned, int))dlsym(h, "nfsu2_android_mod_guest_key");
     }
 
     if (g_p_mem_base && *g_p_mem_base != 0 && g_p_esp && *g_p_esp != 0) {
@@ -144,6 +147,38 @@ static char            g_room_name[64] = "FREEROAM";
 static char            g_player_name[64] = "Racer";
 static char            g_peers_str[256] = "127.0.0.1:47211";
 static int             g_ghost_mode = 1;
+
+/* The Android UI owns the switches; the render/game thread consumes them. */
+static _Atomic int     s_modmenu_flags = 0;
+static _Atomic int     s_modmenu_shift_key = 0x2a;
+static int             s_modmenu_pressed_key = -1; /* game thread only */
+
+int roam_modmenu_flags(void) { return atomic_load(&s_modmenu_flags); }
+int roam_modmenu_shift_key(void) { return atomic_load(&s_modmenu_shift_key); }
+
+static void modmenu_release_key(void) {
+    if (s_modmenu_pressed_key < 0) return;
+    if (!s_modmenu_guest_key) {
+        void *h = dlopen("libnfsu2_android.so", RTLD_NOLOAD | RTLD_GLOBAL);
+        if (!h) h = RTLD_DEFAULT;
+        s_modmenu_guest_key = (void (*)(unsigned, int))dlsym(h, "nfsu2_android_mod_guest_key");
+    }
+    if (s_modmenu_guest_key) s_modmenu_guest_key((unsigned)s_modmenu_pressed_key, 0);
+    s_modmenu_pressed_key = -1;
+}
+
+void roam_modmenu_key_pulse(int scan) {
+    if (scan <= 0 || scan >= 256) return;
+    if (!s_modmenu_guest_key) {
+        void *h = dlopen("libnfsu2_android.so", RTLD_NOLOAD | RTLD_GLOBAL);
+        if (!h) h = RTLD_DEFAULT;
+        s_modmenu_guest_key = (void (*)(unsigned, int))dlsym(h, "nfsu2_android_mod_guest_key");
+    }
+    if (!s_modmenu_guest_key) return;
+    modmenu_release_key();
+    s_modmenu_guest_key((unsigned)scan, 1);
+    s_modmenu_pressed_key = scan; /* released at the next frame hook */
+}
 
 /* Quick Chat state */
 static atomic_int      g_say_pick = -1;
@@ -1232,6 +1267,7 @@ static _Atomic int s_tick_in_progress = 0;
 __attribute__((visibility("default"))) void nfs_roam_frame_tick(void) {
     if (!roam_android_init_symbols() || !g_p_esp || !*g_p_esp) return;
     if (atomic_exchange(&s_tick_in_progress, 1) != 0) return;
+    modmenu_release_key();
     pace_frame();
     static int s_perf_bound = 0;
     if (!s_perf_bound || (g_frame_count % 300) == 0) {
@@ -1615,6 +1651,13 @@ JNIEXPORT jintArray JNICALL Java_io_mininxd_nfsu2_GameActivity_nativeGetActionKe
         JNIEnv *env, jclass clazz) {
     (void)clazz;
     return get_action_keys_array(env);
+}
+
+JNIEXPORT void JNICALL Java_io_mininxd_nfsu2_net_RoamNativeBridge_nativeSetModCheats(
+        JNIEnv *env, jclass clazz, jint flags, jint shift_key) {
+    (void)env; (void)clazz;
+    atomic_store(&s_modmenu_flags, flags & (NFSU2_MOD_AUTO_SHIFT | NFSU2_MOD_INFINITE_NOS));
+    atomic_store(&s_modmenu_shift_key, (shift_key > 0 && shift_key < 256) ? shift_key : 0x2a);
 }
 
 /* JNI Bindings for io.mininxd.nfsu2.PerformanceCores */

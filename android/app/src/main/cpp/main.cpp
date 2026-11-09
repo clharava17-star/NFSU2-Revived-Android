@@ -320,6 +320,12 @@ static int32_t onInput(android_app*,AInputEvent* event){
 extern "C" JNIEXPORT void JNICALL Java_io_mininxd_nfsu2_GameActivity_nativeKey(JNIEnv*,jclass,jint scan,jboolean down){
     setGuestKey(unsigned(scan),down==JNI_TRUE);
 }
+
+// Stable C ABI for the offline Mod Menu in libnfsu2_roam.so.
+extern "C" __attribute__((visibility("default"))) void nfsu2_android_mod_guest_key(unsigned scan, int down){
+    if(scan >= 256u) return;
+    setGuestKey(scan, down != 0);
+}
 extern "C" JNIEXPORT jboolean JNICALL Java_io_mininxd_nfsu2_GameActivity_nativeDrivingControls(JNIEnv*,jclass){return guestDrivingControls()?JNI_TRUE:JNI_FALSE;}
 extern "C" JNIEXPORT void JNICALL Java_io_mininxd_nfsu2_GameActivity_nativePointer(JNIEnv*,jclass,jfloat x,jfloat y,jint phase){
     setGuestPointer(x,y,phase);

@@ -80,6 +80,7 @@ public final class GameActivity extends NativeActivity {
     private PopupWindow controlsWindow;
     private DiagnosticOverlay diagnosticOverlay;
     private RacingControlsView touchControls;
+    private NFSU2ModMenu modMenu;
     private boolean statusHidden;
     private Runnable statusHideTask;
     private final boolean[] touchKeys=new boolean[256],sentKeys=new boolean[256];
@@ -291,6 +292,9 @@ public final class GameActivity extends NativeActivity {
                 }).setNegativeButton("Cancel",null).show();
     }
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
+    private void showNfsu2ModMenu() {
+        if (modMenu != null && !isFinishing()) modMenu.show();
+    }
     private void showTextInput() {
         EditText name = new EditText(this);
         name.setSingleLine(true);
@@ -488,7 +492,9 @@ public final class GameActivity extends NativeActivity {
         statusWindow = new PopupWindow(status, ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT, false);
         statusWindow.setTouchable(false);
-        touchControls = new RacingControlsView(this, this::setTouchKey, this::showTextInput,this::showTiltOptions,this::showFrameLimitOptions);
+        modMenu = new NFSU2ModMenu(this);
+        modMenu.loadAndApply();
+        touchControls = new RacingControlsView(this, this::setTouchKey, this::showTextInput,this::showTiltOptions,this::showFrameLimitOptions,this::showNfsu2ModMenu);
         touchControls.setPointer(GameActivity::nativePointer);
         touchControls.setOnEditingChangeListener(editing -> {
             if (diagnosticOverlay != null) {
@@ -643,6 +649,7 @@ public final class GameActivity extends NativeActivity {
     }
     @Override protected void onPause() {
         foreground=false;
+        if (modMenu != null) modMenu.suspend();
         stopCompanionTicker();
         holdLanBroadcasts(false);
         updateTiltSensor();
@@ -655,6 +662,7 @@ public final class GameActivity extends NativeActivity {
     @Override protected void onResume() {
         super.onResume();
         foreground=true;
+        if (modMenu != null) modMenu.loadAndApply();
         requestGameAudioFocus();
         startCompanionTicker();
         holdLanBroadcasts(true);
