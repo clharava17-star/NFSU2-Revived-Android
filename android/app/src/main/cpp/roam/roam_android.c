@@ -97,7 +97,9 @@ static inline int probe_mem_readable(const void *ptr, size_t n) {
 }
 
 int roam_android_mem_readable(uint32_t a, uint32_t n) {
-    if (!g_p_mem_base || !*g_p_mem_base || !g_p_esp || *g_p_esp == 0) return 0;
+    /* Reading committed guest addresses does not require a live guest ESP.
+     * ESP is required only before calling lifted game functions. */
+    if (!g_p_mem_base || !*g_p_mem_base) return 0;
     if (a < 0x00010000u || (uint64_t)a + n < 0x00010000u || (uint64_t)a + n > 0x100000000ULL) return 0;
     if (g_p_guest_is_readable) {
         return g_p_guest_is_readable(a, n);
