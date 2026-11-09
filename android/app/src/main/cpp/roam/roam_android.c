@@ -349,9 +349,11 @@ static void mod_telemetry_update(void) {
                 /* Car gear is -1=R, 0=N, 1=1st; DriveTrain::Gear is
                  * 0=R, 1=N, 2=1st. forward_gears is a count, so the
                  * drivetrain enum's maximum is forward_gears + 1. */
-                if (drive_gear >= 2 && drive_gear <= 7
+                /* Match the existing native drivetrain helper: Car and DriveTrain
+                 * store the same forward gear index (1=1st, 2=2nd, ...). */
+                if (drive_gear >= 1 && drive_gear <= 7
                         && forward_gears >= 1 && forward_gears <= 6
-                        && drive_gear <= forward_gears + 1
+                        && drive_gear <= forward_gears
                         && perf_type >= 0 && perf_type <= 3
                         && isfinite(shift_up) && shift_up >= 1000.0f && shift_up <= 20000.0f
                         && isfinite(perfect_range_mul) && perfect_range_mul > 0.0f && perfect_range_mul <= 5.0f
@@ -1957,12 +1959,6 @@ JNIEXPORT jfloatArray JNICALL Java_io_mininxd_nfsu2_net_RoamNativeBridge_nativeG
         JNIEnv *env, jclass clazz) {
     (void)clazz;
     return mod_telemetry_array(env);
-}
-
-JNIEXPORT void JNICALL Java_io_mininxd_nfsu2_net_RoamNativeBridge_nativeReadGameTelemetry(
-        JNIEnv *env, jclass clazz, jfloatArray output) {
-    (void)clazz;
-    mod_telemetry_copy_to_array(env, output);
 }
 
 JNIEXPORT void JNICALL Java_io_mininxd_nfsu2_net_RoamNativeBridge_nativeSetModCheats(
