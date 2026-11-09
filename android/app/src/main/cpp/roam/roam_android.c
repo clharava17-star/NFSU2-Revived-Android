@@ -346,9 +346,12 @@ static void mod_telemetry_update(void) {
                         ? (int32_t)MR32(active_cpi + 0x1C8u) : 0;
                 const int max_diff_index = (perf_type >= 0 && perf_type <= 3 && drive_gear >= 0 && drive_gear <= 8)
                         ? perf_type * 9 + drive_gear : -1;
+                /* Car gear is -1=R, 0=N, 1=1st; DriveTrain::Gear is
+                 * 0=R, 1=N, 2=1st. forward_gears is a count, so the
+                 * drivetrain enum's maximum is forward_gears + 1. */
                 if (drive_gear >= 2 && drive_gear <= 7
-                        && drive_gear <= forward_gears
-                        && forward_gears <= 6
+                        && forward_gears >= 1 && forward_gears <= 6
+                        && drive_gear <= forward_gears + 1
                         && perf_type >= 0 && perf_type <= 3
                         && isfinite(shift_up) && shift_up >= 1000.0f && shift_up <= 20000.0f
                         && isfinite(perfect_range_mul) && perfect_range_mul > 0.0f && perfect_range_mul <= 5.0f
