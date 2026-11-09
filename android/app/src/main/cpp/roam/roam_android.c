@@ -1532,12 +1532,19 @@ static void lobby_frame_tick(void) {
 
 static _Atomic int s_tick_in_progress = 0;
 __attribute__((visibility("default"))) void nfs_roam_frame_tick(void) {
-    if (!roam_android_init_symbols() || !g_p_esp || !*g_p_esp) return;
+    /* Telemetry needs the guest memory image, but not an active guest call stack.
+     * Preserve the older working build's memory-ready / stack-ready separation. */
+    const int stack_ready = roam_android_init_symbols();
+    if (!g_p_mem_base || !*g_p_mem_base) return;
     if (atomic_exchange(&s_tick_in_progress, 1) != 0) return;
     atomic_fetch_add(&g_mod_frame_ticks, 1);
     atomic_store(&g_mod_memory_ready, 1);
-    atomic_store(&g_mod_stack_ready, 1);
+    atomic_store(&g_mod_stack_ready, (g_p_esp && *g_p_esp) ? 1 : 0);
     mod_telemetry_update();
+    if (!stack_ready || !g_p_esp || !*g_p_esp) {
+        atomic_store(&s_tick_in_progress, 0);
+        return;
+    }
     modmenu_release_key();
     pace_frame();
     static int s_perf_bound = 0;
