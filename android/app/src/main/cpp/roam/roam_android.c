@@ -1561,10 +1561,12 @@ __attribute__((visibility("default"))) void nfs_roam_frame_tick(void) {
     const int stack_ready = roam_android_init_symbols();
     if (!g_p_mem_base || !*g_p_mem_base) return;
     if (atomic_exchange(&s_tick_in_progress, 1) != 0) return;
-    atomic_fetch_add(&g_mod_frame_ticks, 1);
+    const uint32_t frame_tick = atomic_fetch_add(&g_mod_frame_ticks, 1) + 1u;
     atomic_store(&g_mod_memory_ready, 1);
     atomic_store(&g_mod_stack_ready, (g_p_esp && *g_p_esp) ? 1 : 0);
-    mod_telemetry_update();
+    /* Diagnostic telemetry is independent of native shifting. Refresh it at
+     * half the render rate to reduce guest-memory inspection overhead. */
+    if ((frame_tick & 1u) == 0u) mod_telemetry_update();
     if (!stack_ready || !g_p_esp || !*g_p_esp) {
         atomic_store(&s_tick_in_progress, 0);
         return;
