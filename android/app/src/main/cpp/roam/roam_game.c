@@ -7973,7 +7973,8 @@ static int modmenu_shift_window(uint32_t car, int gear, int *max_gear, float *po
     int maximum = (int32_t)rd32(spec + 0x18u) + 1;
     int drivetrain_gear = (int32_t)rd32(drivetrain + 0x3cu);
     int selector = (int32_t)rd32(drivetrain + 0xf0u);
-    if (maximum < 2 || maximum > 8 || gear < 1 || gear >= maximum || drivetrain_gear != gear || selector < 0 || selector > 3) return 0;
+    /* Car::gear uses 1=1st; DriveTrain::Gear uses 2=1st. */
+    if (maximum < 2 || maximum > 8 || gear < 1 || gear >= maximum || drivetrain_gear != gear + 1 || selector < 0 || selector > 3) return 0;
 
     uint32_t point_addr = drivetrain + 0x84u + (uint32_t)gear * 4u;
     uint32_t weight_addr = 0x007fbf60u + ((uint32_t)selector * 9u + (uint32_t)gear) * 4u;
