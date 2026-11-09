@@ -410,6 +410,15 @@ static jfloatArray mod_telemetry_array(JNIEnv *env) {
     return result;
 }
 
+/* Refresh on demand from the Java polling controller as well as per frame.
+ * Guest memory reads are valid without a live ESP; only lifted calls need it. */
+static void mod_telemetry_refresh(void) {
+    const int memory_ready = g_p_mem_base && *g_p_mem_base;
+    atomic_store(&g_mod_memory_ready, memory_ready ? 1 : 0);
+    atomic_store(&g_mod_stack_ready, (g_p_esp && *g_p_esp) ? 1 : 0);
+    if (memory_ready) mod_telemetry_update();
+}
+
 
 static int             g_fd = -1;
 static pthread_t       g_thr;
@@ -1936,6 +1945,7 @@ JNIEXPORT jintArray JNICALL Java_io_mininxd_nfsu2_GameActivity_nativeGetActionKe
 JNIEXPORT jfloatArray JNICALL Java_io_mininxd_nfsu2_net_RoamNativeBridge_nativeGetGameTelemetry(
         JNIEnv *env, jclass clazz) {
     (void)clazz;
+    mod_telemetry_refresh();
     return mod_telemetry_array(env);
 }
 
