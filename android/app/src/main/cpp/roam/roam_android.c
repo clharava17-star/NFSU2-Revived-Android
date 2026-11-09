@@ -412,24 +412,22 @@ static void mod_telemetry_update(void) {
     mod_telemetry_publish(next);
 }
 
-static jfloatArray mod_telemetry_array(JNIEnv *env) {
+/* Copy the latest render-thread snapshot into a caller-owned Java array.
+ * The UI thread must never walk guest memory: that work belongs to the game
+ * frame hook, which publishes one coherent snapshot per rendered frame. */
+static void mod_telemetry_copy_to_array(JNIEnv *env, jfloatArray result) {
+    if (!result || (*env)->GetArrayLength(env, result) < 34) return;
     jfloat snapshot[34];
     pthread_mutex_lock(&g_mod_telemetry_mu);
     memcpy(snapshot, g_mod_telemetry, sizeof(snapshot));
     pthread_mutex_unlock(&g_mod_telemetry_mu);
-
-    jfloatArray result = (*env)->NewFloatArray(env, 34);
-    if (result) (*env)->SetFloatArrayRegion(env, result, 0, 34, snapshot);
-    return result;
+    (*env)->SetFloatArrayRegion(env, result, 0, 34, snapshot);
 }
 
-/* Refresh on demand from the Java polling controller as well as per frame.
- * Guest memory reads are valid without a live ESP; only lifted calls need it. */
-static void mod_telemetry_refresh(void) {
-    const int memory_ready = g_p_mem_base && *g_p_mem_base;
-    atomic_store(&g_mod_memory_ready, memory_ready ? 1 : 0);
-    atomic_store(&g_mod_stack_ready, (g_p_esp && *g_p_esp) ? 1 : 0);
-    if (memory_ready) mod_telemetry_update();
+static jfloatArray mod_telemetry_array(JNIEnv *env) {
+    jfloatArray result = (*env)->NewFloatArray(env, 34);
+    if (result) mod_telemetry_copy_to_array(env, result);
+    return result;
 }
 
 
@@ -1958,8 +1956,13 @@ JNIEXPORT jintArray JNICALL Java_io_mininxd_nfsu2_GameActivity_nativeGetActionKe
 JNIEXPORT jfloatArray JNICALL Java_io_mininxd_nfsu2_net_RoamNativeBridge_nativeGetGameTelemetry(
         JNIEnv *env, jclass clazz) {
     (void)clazz;
-    mod_telemetry_refresh();
     return mod_telemetry_array(env);
+}
+
+JNIEXPORT void JNICALL Java_io_mininxd_nfsu2_net_RoamNativeBridge_nativeReadGameTelemetry(
+        JNIEnv *env, jclass clazz, jfloatArray output) {
+    (void)clazz;
+    mod_telemetry_copy_to_array(env, output);
 }
 
 JNIEXPORT void JNICALL Java_io_mininxd_nfsu2_net_RoamNativeBridge_nativeSetModCheats(
