@@ -7976,8 +7976,12 @@ static int modmenu_shift_window(uint32_t car, int gear, int *max_gear, float *po
     /* Car::gear uses 1=1st; DriveTrain::Gear uses 2=1st. */
     if (maximum < 2 || maximum > 8 || gear < 1 || gear >= maximum || drivetrain_gear != gear + 1 || selector < 0 || selector > 3) return 0;
 
-    uint32_t point_addr = drivetrain + 0x84u + (uint32_t)gear * 4u;
-    uint32_t weight_addr = 0x007fbf60u + ((uint32_t)selector * 9u + (uint32_t)gear) * 4u;
+    /* Both DriveTrain::shiftUp[] and PerfectShiftMaxRPMDiff[] are
+     * indexed by DriveTrain::Gear (0=R, 1=N, 2=1st), not Car::gear
+     * (1=1st). The enum offset was checked above; use it for both tables. */
+    const uint32_t drivetrain_index = (uint32_t)drivetrain_gear;
+    uint32_t point_addr = drivetrain + 0x84u + drivetrain_index * 4u;
+    uint32_t weight_addr = 0x007fbf60u + ((uint32_t)selector * 9u + drivetrain_index) * 4u;
     if (!ok(point_addr, 3u) || !ok(drivetrain + 0xe4u, 3u) || !ok(weight_addr, 3u) || !ok(0x007fbf5cu, 3u)) return 0;
 
     float shift_point = MRF32(point_addr);
