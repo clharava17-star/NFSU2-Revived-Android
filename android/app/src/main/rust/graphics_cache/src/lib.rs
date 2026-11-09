@@ -2,18 +2,46 @@
 //!
 //! Pipeline cache validation, disk persistence, and background compilation workers.
 
+pub mod audio_engine;
 pub mod async_compiler;
 pub mod crowd_filter;
 pub mod d3d9_filter;
 pub mod dynamic_thunk;
+pub mod extra_options;
 pub mod gles_optimizer;
 pub mod headlights;
+pub mod math_simd;
+pub mod physics_simd;
 pub mod pipeline_cache;
 pub mod render_queue;
 pub mod simd_audio;
+pub mod texture_pipeline;
+pub mod visual_geometry;
+pub mod win32_comm;
+pub mod win32_ddraw;
+pub mod win32_dinput;
+pub mod win32_fs;
+pub mod win32_gdi;
+pub mod win32_netapi;
+pub mod win32_shell;
+pub mod win32_tapi;
 
+pub use audio_engine::*;
 pub use crowd_filter::*;
+pub use extra_options::*;
 pub use headlights::*;
+pub use math_simd::*;
+pub use physics_simd::*;
+pub use texture_pipeline::*;
+pub use visual_geometry::*;
+pub use win32_comm::*;
+pub use win32_ddraw::*;
+pub use win32_dinput::*;
+pub use win32_fs::*;
+pub use win32_gdi::*;
+pub use win32_netapi::*;
+pub use win32_shell::*;
+pub use win32_tapi::*;
 
 use async_compiler::AsyncCompilerEngine;
 use pipeline_cache::{PipelineCacheManager, VK_UUID_SIZE};

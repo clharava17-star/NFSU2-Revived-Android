@@ -489,16 +489,8 @@ public final class GameOptions {
     }
 
     static final Cheat[] CHEATS = {
-        new Cheat("hidden_races", "Show Hidden Career Races", "Reveal all 33 hidden career races on world map"),
-        new Cheat("districts", "Unlock All Districts", "Explore Coal Harbor, Jackson Heights & all map areas (opendoors)", "opendoors"),
-        new Cheat("cars_parts", "Unlock All Cars & Circuit Parts", "All vehicles & performance parts in Career (ordermebaby)", "ordermebaby"),
-        new Cheat("perf_lv1", "Unlock Performance Parts Lv 1", "Engine, transmission, ECU, nitrous Lv 1 (needperformance1)", "needperformance1"),
-        new Cheat("perf_lv2", "Unlock Performance Parts Lv 2", "Top-tier Level 2 performance upgrades (needperformance2)", "needperformance2"),
-        new Cheat("vis_lv1", "Unlock Visual Upgrades Lv 1", "Body kits, spoilers, hoods, rims Lv 1 (gimmevisual1)", "gimmevisual1"),
-        new Cheat("vis_lv2", "Unlock Visual Upgrades Lv 2", "Level 2 widebody and visual customization (gimmevisual2)", "gimmevisual2"),
-        new Cheat("cash", "Extra Career Cash (+$20,000)", "Starting bank boost in Career mode (regmebaby)", "regmebaby"),
-        new Cheat("sponsors", "Unlock Sponsor Cars", "Snoop Dogg, Chingy, Capone, D3, ShineStreet & David Choe cars", "yodogg", "gimmechingy", "wannacapone", "davidchoeart", "tunejapantuning", "shinestreetbright", "wantmyd3"),
-        new Cheat("vinyls", "Unlock Sponsor Vinyls", "Best Buy, Cingular, Burger King, Edge & Old Spice", "needmybestbuy", "gotmycingular", "gottahavebk", "gottaedge", "goforoldspice")
+        new Cheat("dumb_ai", "Dumb AI (AutoDrive)", "Enable AI autopilot / Drunk Driver to steer and drive player vehicle"),
+        new Cheat("cash", "Starting Cash (+$20,000)", "Starting bank boost in Career mode (regmebaby)", "regmebaby")
     };
 
     static boolean isCheatEnabled(Context context, String id) {
@@ -586,6 +578,10 @@ public final class GameOptions {
                     } else if (trimmed.startsWith("DisableCutsceneBorders")) {
                         String target = "DisableCutsceneBorders = " + cutsceneBorders + "               ; Removes letterboxing that appears during cutscenes.";
                         if (!line.startsWith("DisableCutsceneBorders = " + cutsceneBorders)) { line = target; changed = true; }
+                    } else if (trimmed.startsWith("ImproveGamepadSupport")) {
+                        String padSupport = isConsolePad(context) ? "2" : "1";
+                        String target = "ImproveGamepadSupport = " + padSupport + "                ; Adds text to buttons and assigns front-end actions. Requires an XInput gamepad. (1 = Xbox Text | 2 = PlayStation Text | 3 = PC Text | 4 = None)";
+                        if (!line.startsWith("ImproveGamepadSupport = " + padSupport)) { line = target; changed = true; }
                     }
                     lines.add(line);
                 }
@@ -669,6 +665,114 @@ public final class GameOptions {
             }
         } catch (Exception e) {
             android.util.Log.w("NFSU2", "Failed to synchronize WidescreenFix.dat layout", e);
+        }
+    }
+
+    // ---- Extra Options (ExOpts Team mod) ----------------------------------------------------
+    public static final String EXTRA_OPTIONS_ENABLED = "extra_options_enabled";
+
+    public static boolean isExtraOptionsEnabled(Context context) {
+        return prefs(context).getBoolean(EXTRA_OPTIONS_ENABLED, true);
+    }
+
+    public static void setExtraOptionsEnabled(Context context, boolean enabled) {
+        prefs(context).edit().putBoolean(EXTRA_OPTIONS_ENABLED, enabled).apply();
+    }
+
+    public static boolean getExtraOption(Context context, String key, boolean defVal) {
+        return prefs(context).getBoolean("exopts_" + key, defVal);
+    }
+
+    public static void setExtraOption(Context context, String key, boolean val) {
+        prefs(context).edit().putBoolean("exopts_" + key, val).apply();
+    }
+
+    public static void resetExtraOptions(Context context) {
+        prefs(context).edit()
+                .putBoolean("exopts_regional_cars", true)
+                .putBoolean("exopts_lap_controller", true)
+                .putBoolean("exopts_opponent_controller", true)
+                .putBoolean("exopts_lap_percent", true)
+                .putBoolean("exopts_drift_tweaks", true)
+                .putBoolean("exopts_fixes_3d", true)
+                .putBoolean("exopts_menu_enhancements", true)
+                .apply();
+    }
+
+    public static void syncExtraOptionsIni(Context context) {
+        try {
+            java.io.File iniFile = new java.io.File(LauncherActivity.gameRoot(),
+                    "scripts/NFSU2ExtraOptionsSettings.ini");
+            if (!iniFile.isFile()) {
+                iniFile = new java.io.File(android.os.Environment.getExternalStorageDirectory(),
+                        "nfsu2/scripts/NFSU2ExtraOptionsSettings.ini");
+                if (!iniFile.isFile()) {
+                    iniFile = new java.io.File(android.os.Environment.getExternalStorageDirectory(),
+                            "cache/scripts/NFSU2ExtraOptionsSettings.ini");
+                }
+            }
+            if (!iniFile.isFile()) {
+                java.io.File target = new java.io.File(LauncherActivity.gameRoot(), "scripts/NFSU2ExtraOptionsSettings.ini");
+                if (target.getParentFile() != null && !target.getParentFile().exists()) target.getParentFile().mkdirs();
+                LauncherActivity.copyAssetFile(context, "scripts/NFSU2ExtraOptionsSettings.ini", target);
+                iniFile = target;
+            }
+            if (!iniFile.isFile()) return;
+
+            java.util.List<String> lines = new java.util.ArrayList<>();
+            try (java.io.BufferedReader br = new java.io.BufferedReader(new java.io.FileReader(iniFile))) {
+                String line;
+                while ((line = br.readLine()) != null) lines.add(line);
+            }
+
+            boolean regional = getExtraOption(context, "regional_cars", true);
+            boolean lapCtrl = getExtraOption(context, "lap_controller", true);
+            boolean oppCtrl = getExtraOption(context, "opponent_controller", true);
+            boolean lapPct = getExtraOption(context, "lap_percent", true);
+            boolean drift = getExtraOption(context, "drift_tweaks", true);
+            boolean fixes = getExtraOption(context, "fixes_3d", true);
+            boolean menu = getExtraOption(context, "menu_enhancements", true);
+
+            java.util.List<String> out = new java.util.ArrayList<>();
+            for (String l : lines) {
+                String trimmed = l.trim();
+                if (trimmed.startsWith("UnlockRegionalCars")) {
+                    out.add("UnlockRegionalCars = " + (regional ? "1" : "0"));
+                } else if (trimmed.startsWith("ShowPercentOn1LapRaces")) {
+                    out.add("ShowPercentOn1LapRaces = " + (lapPct ? "1" : "0"));
+                } else if (trimmed.startsWith("DisappearingWheelsFix")) {
+                    out.add("DisappearingWheelsFix = " + (fixes ? "1" : "0"));
+                } else if (trimmed.startsWith("DamageFix")) {
+                    out.add("DamageFix = " + (fixes ? "1" : "0"));
+                } else if (trimmed.startsWith("MegalowPartsFix")) {
+                    out.add("MegalowPartsFix = " + (fixes ? "1" : "0"));
+                } else if (trimmed.startsWith("ShowOutrun")) {
+                    out.add("ShowOutrun = " + (menu ? "1" : "0"));
+                } else if (trimmed.startsWith("FreeRunTrackSelect")) {
+                    out.add("FreeRunTrackSelect = " + (menu ? "1" : "0"));
+                } else if (trimmed.startsWith("OutrunTrackSelect")) {
+                    out.add("OutrunTrackSelect = " + (menu ? "1" : "0"));
+                } else if (trimmed.startsWith("ShowWithoutMultiplying")) {
+                    out.add("ShowWithoutMultiplying = " + (drift ? "1" : "0"));
+                } else if (trimmed.startsWith("PlusSign")) {
+                    out.add("PlusSign = " + (drift ? "1" : "0"));
+                } else if (trimmed.startsWith("MaximumMultiplier")) {
+                    out.add("MaximumMultiplier = " + (drift ? "9" : "5"));
+                } else if (trimmed.startsWith("Minimum") && !l.contains("OpponentControllers")) {
+                    out.add("Minimum = " + (lapCtrl ? "0" : "1"));
+                } else if (trimmed.startsWith("Maximum") && !l.contains("OpponentControllers")) {
+                    out.add("Maximum = " + (lapCtrl ? "127" : "10"));
+                } else {
+                    out.add(l);
+                }
+            }
+
+            try (java.io.PrintWriter pw = new java.io.PrintWriter(new java.io.FileWriter(iniFile))) {
+                for (String ol : out) pw.println(ol);
+            }
+            android.util.Log.i("NFSU2", "Synchronized Extra Options settings in " + iniFile.getAbsolutePath());
+        } catch (Throwable t) {
+            android.util.Log.w("NFSU2", "Failed to synchronize Extra Options INI", t);
         }
     }
 }

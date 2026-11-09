@@ -38,12 +38,57 @@ public final class GameActivity extends NativeActivity {
     private boolean foreground;
     private TextView status;
     private PopupWindow statusWindow;
+
+    private android.media.AudioManager audioManager;
+    private final android.media.AudioManager.OnAudioFocusChangeListener audioFocusListener = focusChange -> {
+        switch (focusChange) {
+            case android.media.AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:
+            case android.media.AudioManager.AUDIOFOCUS_LOSS:
+                GameLog.w("Audio", "Audio focus lost (" + focusChange + "), incoming call or media switch active");
+                break;
+            case android.media.AudioManager.AUDIOFOCUS_GAIN:
+            case android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT:
+            case android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK:
+                GameLog.i("Audio", "Audio focus restored (" + focusChange + ")");
+                break;
+        }
+    };
+
+    private void requestGameAudioFocus() {
+        try {
+            if (audioManager == null) {
+                audioManager = (android.media.AudioManager) getSystemService(AUDIO_SERVICE);
+            }
+            if (audioManager != null) {
+                if (Build.VERSION.SDK_INT >= 26) {
+                    android.media.AudioFocusRequest request = new android.media.AudioFocusRequest.Builder(android.media.AudioManager.AUDIOFOCUS_GAIN)
+                            .setAudioAttributes(new android.media.AudioAttributes.Builder()
+                                    .setUsage(android.media.AudioAttributes.USAGE_GAME)
+                                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC)
+                                    .build())
+                            .setOnAudioFocusChangeListener(audioFocusListener)
+                            .build();
+                    audioManager.requestAudioFocus(request);
+                } else {
+                    audioManager.requestAudioFocus(audioFocusListener, android.media.AudioManager.STREAM_MUSIC, android.media.AudioManager.AUDIOFOCUS_GAIN);
+                }
+            }
+        } catch (Throwable t) {
+            GameLog.w("Audio", "Could not request audio focus: " + t.getMessage());
+        }
+    }
     private PopupWindow controlsWindow;
     private DiagnosticOverlay diagnosticOverlay;
     private RacingControlsView touchControls;
+    private NFSU2ModMenu modMenu;
     private boolean statusHidden;
     private Runnable statusHideTask;
     private final boolean[] touchKeys=new boolean[256],sentKeys=new boolean[256];
+    /* Auto Shift follows the same NativeActivity key path as physical controls. */
+    private int keyShiftUp = 0x2a;
+    private Handler autoShiftHandler;
+    private Runnable autoShiftPoll;
+    private int autoShiftPressedScan = -1;
     private boolean tiltLeft,tiltRight,tiltEnabled,tiltCalibrate=true;
     private float tiltFiltered,tiltNeutral,tiltSensitivity=1;
     private boolean tiltInvert;
@@ -162,6 +207,29 @@ public final class GameActivity extends NativeActivity {
         try { nativeKeyNav(scan, down); } catch (Throwable ignored) {}
     }
     private static native void nativeKeyNav(int scan, boolean down);
+
+    void onModMenuSettingsApplied() {
+        updateAutoShiftController();
+    }
+
+    private void stopAutoShiftController() {
+        Handler handler = autoShiftHandler;
+        Runnable poll = autoShiftPoll;
+        autoShiftHandler = null;
+        autoShiftPoll = null;
+        if (handler != null) handler.removeCallbacksAndMessages(null);
+        if (autoShiftPressedScan >= 0) {
+            nativeKey(autoShiftPressedScan, false);
+            autoShiftPressedScan = -1;
+        }
+    }
+
+    private void updateAutoShiftController() {
+        /* Smart Perfect Shift is handled by modmenu_game_frame() on the native
+         * guest frame. Keep Java out of the render loop: polling telemetry from
+         * the UI thread caused unnecessary work and could contend with game memory. */
+        stopAutoShiftController();
+    }
     private static boolean nativeDrivingControls() { return com.nfsu2.androidevolved.GameActivity.nativeDrivingControls(); }
     private static boolean nativeGamepadUsed() { return com.nfsu2.androidevolved.GameActivity.nativeGamepadUsed(); }
     private static void nativeTypeText(String value, boolean replace) { com.nfsu2.androidevolved.GameActivity.nativeTypeText(value, replace); }
@@ -252,6 +320,9 @@ public final class GameActivity extends NativeActivity {
                 }).setNegativeButton("Cancel",null).show();
     }
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
+    private void showNfsu2ModMenu() {
+        if (modMenu != null && !isFinishing()) modMenu.show();
+    }
     private void showTextInput() {
         EditText name = new EditText(this);
         name.setSingleLine(true);
@@ -340,6 +411,12 @@ public final class GameActivity extends NativeActivity {
 
             boolean hiddenRaces = GameOptions.isCheatEnabled(this, "hidden_races");
             android.system.Os.setenv("NFSU2_SHOW_HIDDEN_RACES", hiddenRaces ? "1" : "0", true);
+
+            boolean dumbAI = GameOptions.isCheatEnabled(this, "dumb_ai");
+            android.system.Os.setenv("NFSU2_DUMB_AI", dumbAI ? "1" : "0", true);
+
+            boolean extraOptions = GameOptions.isExtraOptionsEnabled(this);
+            android.system.Os.setenv("NFSU2_EXTRA_OPTIONS", extraOptions ? "1" : "0", true);
 
             android.system.Os.setenv("NFSU2_AUTOSAVE", "1", true);
 
@@ -443,7 +520,9 @@ public final class GameActivity extends NativeActivity {
         statusWindow = new PopupWindow(status, ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT, false);
         statusWindow.setTouchable(false);
-        touchControls = new RacingControlsView(this, this::setTouchKey, this::showTextInput,this::showTiltOptions,this::showFrameLimitOptions);
+        modMenu = new NFSU2ModMenu(this);
+        modMenu.loadAndApply();
+        touchControls = new RacingControlsView(this, this::setTouchKey, this::showTextInput,this::showTiltOptions,this::showFrameLimitOptions,this::showNfsu2ModMenu);
         touchControls.setPointer(GameActivity::nativePointer);
         touchControls.setOnEditingChangeListener(editing -> {
             if (diagnosticOverlay != null) {
@@ -532,7 +611,8 @@ public final class GameActivity extends NativeActivity {
         if (text != null) {
             GameLog.i("Status", text);
             if (text.contains("halted") || text.contains("detenido") || text.contains("Error")
-                    || text.contains("failed") || text.contains("terminada") || text.contains("finished")) {
+                    || text.contains("failed") || text.contains("terminada") || text.contains("finished")
+                    || text.contains("stall") || text.contains("freeze")) {
                 GameLog.logHalt(this, text);
             }
         }
@@ -597,6 +677,8 @@ public final class GameActivity extends NativeActivity {
     }
     @Override protected void onPause() {
         foreground=false;
+        stopAutoShiftController();
+        if (modMenu != null) modMenu.suspend();
         stopCompanionTicker();
         holdLanBroadcasts(false);
         updateTiltSensor();
@@ -609,6 +691,9 @@ public final class GameActivity extends NativeActivity {
     @Override protected void onResume() {
         super.onResume();
         foreground=true;
+        if (modMenu != null) modMenu.loadAndApply();
+        updateAutoShiftController();
+        requestGameAudioFocus();
         startCompanionTicker();
         holdLanBroadcasts(true);
         updateTiltSensor();
@@ -669,10 +754,14 @@ public final class GameActivity extends NativeActivity {
     public boolean onGenericMotionEvent(android.view.MotionEvent event) {
         if ((event.getSource() & android.view.InputDevice.SOURCE_JOYSTICK) == android.view.InputDevice.SOURCE_JOYSTICK
                 && event.getAction() == android.view.MotionEvent.ACTION_MOVE) {
-            float z = event.getAxisValue(android.view.MotionEvent.AXIS_Z);
-            float rz = event.getAxisValue(android.view.MotionEvent.AXIS_RZ);
-            if (Math.abs(z) > 0.15f || Math.abs(rz) > 0.15f) {
-                AdhocRoamClient.handleRightStick(z, rz);
+            float rx = event.getAxisValue(android.view.MotionEvent.AXIS_Z);
+            float ry = event.getAxisValue(android.view.MotionEvent.AXIS_RZ);
+            if (Math.abs(rx) < 0.01f && Math.abs(ry) < 0.01f) {
+                rx = event.getAxisValue(android.view.MotionEvent.AXIS_RX);
+                ry = event.getAxisValue(android.view.MotionEvent.AXIS_RY);
+            }
+            if (Math.abs(rx) > 0.15f || Math.abs(ry) > 0.15f) {
+                AdhocRoamClient.handleRightStick(rx, ry);
             } else {
                 AdhocRoamClient.handleRightStick(0f, 0f);
             }
@@ -681,6 +770,7 @@ public final class GameActivity extends NativeActivity {
     }
 
     @Override protected void onDestroy() {
+        stopAutoShiftController();
         super.onDestroy();
         stopCompanionTicker();
         if (diagnosticOverlay != null) diagnosticOverlay.stop();

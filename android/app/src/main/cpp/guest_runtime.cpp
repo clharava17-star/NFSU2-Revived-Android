@@ -13,6 +13,8 @@
 #include "d3d9_bridge.h"
 #include "nfs_widescreen.h"
 #include "adpf_manager.h"
+#include "performance_tuner.h"
+#include "audio_watchdog.h"
 #endif
 #include <array>
 #include <vector>
@@ -192,36 +194,8 @@ struct WaitScope {
 };
 std::atomic<int64_t> lastPresentMs{0};
 int64_t steadyMs(){return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();}
-void startStallWatch(){
-    static std::once_flag started;
-    std::call_once(started,[]{std::thread([]{
-        int64_t reportedFor=0;
-        while(!stopRequested.load()){
-            std::this_thread::sleep_for(std::chrono::seconds(2));
-            int64_t last=lastPresentMs.load(),idle=steadyMs()-last;
-            if(guestPaused.load()||idle<12000||reportedFor==last)continue;
-            reportedFor=last;
-            NFS_RUNTIME_LOG(ANDROID_LOG_WARN,"NFSU2","Guest stall: no frame for %lld s; guest threads:",static_cast<long long>(idle/1000));
-            std::lock_guard<std::mutex> lock(threadTracesMutex);
-            for(auto& [id,trace]:threadTraces){
-                const char* wait=trace->wait.load();uint32_t handle=trace->handle.load();
-                std::string detail,held,callers;
-                // Read-only peeks at guest memory from this host thread: stable while the guest is stuck.
-                if(wait&&!std::strcmp(wait,"EnterCriticalSection")&&memory&&memory->readable(handle,24))
-                    detail=" (owner thread "+std::to_string(read32(handle+12))+", count "+std::to_string(read32(handle+8))+")";
-                for(auto& slot:trace->held)if(uint32_t cs=slot.load())held+=" "+hex(cs);
-                uint32_t esp=trace->esp.load();
-                for(unsigned i=0,found=0;memory&&i<256&&found<10;++i){
-                    if(!memory->readable(esp+i*4,4))break;
-                    uint32_t value=read32(esp+i*4);
-                    if(value>=0x401000u&&value<0x75d000u&&recomp_lookup(value)==nullptr){callers+=" "+hex(value);++found;}
-                }
-                NFS_RUNTIME_LOG(ANDROID_LOG_WARN,"NFSU2","  thread %u at %08x %s %08x%s; holds:%s; stack:%s",id,trace->func.load(),
-                    wait?wait:"running",wait?handle:0u,detail.c_str(),held.empty()?" none":held.c_str(),callers.c_str());
-            }
-        }
-    }).detach();});
-}
+void startStallWatch();
+static void updateDumbAIState();
 void yieldGuestMachine(unsigned milliseconds=0,std::chrono::steady_clock::time_point deadline={}) {
     if(!machineLease||!machineLease->owns_lock())throw GuestStop("Guest scheduler ownership missing");
     {auto& trace=currentTrace();trace.func=g_cur_func;trace.esp=g_esp;}
@@ -234,7 +208,7 @@ thread_local bool renderThread=false;
 // Render-thread slice handovers and the time spent getting the machine back.
 uint64_t renderYields=0;std::chrono::nanoseconds renderWait{};
 void checkGuestProgress() {
-    while(guestPaused.load()&&!stopRequested.load())yieldGuestMachine(20);
+    while(guestPaused.load()&&!stopRequested.load())yieldGuestMachine(1);
     if(stopRequested.load())throw GuestStop("Guest execution cancelled");
     // Imports and lifted back edges can reach this hook many times per frame.
     // Keep cancellation immediate, but amortize full register saves and native
@@ -364,6 +338,7 @@ void d3dDispatch(){
             if(!s_roam_tick)s_roam_tick=reinterpret_cast<void(*)()>(dlsym(RTLD_DEFAULT,"nfs_roam_frame_tick"));
         }
         if(s_roam_tick)s_roam_tick();
+        updateDumbAIState();
         serviceGuestSound();
         lastPresentMs=steadyMs();
         startStallWatch();
@@ -449,6 +424,79 @@ inline void syncPreTimestepPacing() {
 #include "guest_input.inc"
 #include "guest_audio.inc"
 #include "guest_network.inc"
+#include "guest_win32_compat.inc"
+#include "guest_win32_core.inc"
+#include "guest_win32_comm.inc"
+#include "guest_win32_tapi.inc"
+#include "guest_win32_gdi.inc"
+#include "guest_extra_options.inc"
+
+void notifyHaltToHost(const char* message);
+
+static void writeNativeHaltLog(const std::string& dump) {
+    const char* targets[] = {
+        "/sdcard/NFSU2/halt_log.txt",
+        "/sdcard/nfsu2/halt_log.txt",
+        "/storage/emulated/0/NFSU2/halt_log.txt",
+        "/storage/emulated/0/nfsu2/halt_log.txt"
+    };
+    for (const char* target : targets) {
+        FILE* fp = std::fopen(target, "a");
+        if (fp) {
+            std::fputs(dump.c_str(), fp);
+            std::fflush(fp);
+            std::fclose(fp);
+        }
+    }
+}
+
+void startStallWatch(){
+    static std::once_flag started;
+    std::call_once(started,[]{std::thread([]{
+        int64_t reportedFor=0;
+        while(!stopRequested.load()){
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            // Keep synthetic clock alive if audio stream is running so DirectSound calls don't block
+            if(!guestPaused.load(std::memory_order_relaxed)){
+                nfs_audio_watchdog::serviceSyntheticClock(soundMixer);
+                if(nfs_audio_watchdog::isCallbackStalled()&&nfs_audio_watchdog::canAttemptReconnect()){
+                    soundStreamRestartPending.store(true,std::memory_order_release);
+                }
+            }
+            int64_t last=lastPresentMs.load(),idle=steadyMs()-last;
+            if(guestPaused.load()||idle<4000||reportedFor==last)continue;
+            reportedFor=last;
+            std::ostringstream ss;
+            ss << "\n==================== GAME STALL HALT ====================\n";
+            ss << "Idle: " << (idle / 1000) << " seconds without D3D9 present\n";
+            ss << "Guest Threads:\n";
+            {
+                std::lock_guard<std::mutex> lock(threadTracesMutex);
+                for(auto& [id,trace]:threadTraces){
+                    const char* wait=trace->wait.load();uint32_t handle=trace->handle.load();
+                    std::string detail,held,callers;
+                    if(wait&&!std::strcmp(wait,"EnterCriticalSection")&&memory&&memory->readable(handle,24))
+                        detail=" (owner thread "+std::to_string(read32(handle+12))+", count "+std::to_string(read32(handle+8))+")";
+                    for(auto& slot:trace->held)if(uint32_t cs=slot.load())held+=" "+hex(cs);
+                    uint32_t esp=trace->esp.load();
+                    for(unsigned i=0,found=0;memory&&i<256&&found<10;++i){
+                        if(!memory->readable(esp+i*4,4))break;
+                        uint32_t value=read32(esp+i*4);
+                        if(value>=0x401000u&&value<0x75d000u&&recomp_lookup(value)==nullptr){callers+=" "+hex(value);++found;}
+                    }
+                    ss << "  thread " << id << " at " << hex(trace->func.load()) << " " << (wait?wait:"running")
+                       << " " << hex(wait?handle:0u) << detail << "; holds:" << (held.empty()?" none":held)
+                       << "; stack:" << callers << "\n";
+                }
+            }
+            ss << "==========================================================\n";
+            std::string dump = ss.str();
+            NFS_RUNTIME_LOG(ANDROID_LOG_WARN,"NFSU2","%s",dump.c_str());
+            writeNativeHaltLog(dump);
+            notifyHaltToHost(("Guest stall detected: " + std::to_string(idle/1000) + "s idle\n" + dump).c_str());
+        }
+    }).detach();});
+}
 void testGuestScheduling(){
     State original;original.save();uint32_t savedError=lastError,savedTLS=tlsValues[1087];
     g_eax=0x11223344;g_fs_base=0x21000000;g_st[0]=123.5;g_xmm[7].u64[0]=0x123456789abcdef0ull;
@@ -484,6 +532,11 @@ void testGuestSoundCaps(){
     NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSMW","DirectSound caps passed: mono/stereo, 8/16-bit, continuous rates, software buffers and guest ABI");
 }
 recomp_func_t resolveFunction(const std::string& dll, const std::string& name) {
+    if (auto compat = resolveWin32CompatFunction(dll, name)) return compat;
+    if (auto core = resolveCoreWin32Function(dll, name)) return core;
+    if (auto comm = resolveWin32CommFunction(dll, name)) return comm;
+    if (auto tapi = resolveWin32TapiFunction(dll, name)) return tapi;
+    if (auto gdi = resolveWin32GdiFunction(dll, name)) return gdi;
     if((dll=="shfolder.dll"||dll=="shell32.dll")&&name=="SHGetFolderPathA")return shellFolderPath;
     if(dll=="dsound.dll"&&(name=="#1"||name=="DirectSoundCreate"))return directSoundCreate;
     if(dll=="dinput8.dll"&&name=="DirectInput8Create")return directInputCreate;
@@ -885,7 +938,8 @@ extern "C" recomp_func_t recomp_lookup_manual(uint32_t va) {
 extern "C" recomp_func_t recomp_lookup_import(uint32_t va) {
     checkGuestProgress();
     if(va>=soundMethodBase+0x1000&&va<soundMethodBase+0x3000&&!(va%16)){soundToken=va;return soundDispatch;}
-    if(va>=inputMethodBase+0x1000&&va<inputMethodBase+0x5000&&!(va%16)){inputToken=va;return inputDispatch;}  // kinds 1-4: DirectInput, keyboard, mouse, gamepad
+    if(va>=inputMethodBase+0x1000&&va<inputMethodBase+0x6000&&!(va%16)){inputToken=va;return inputDispatch;}  // kinds 1-5: DirectInput, keyboard, mouse, gamepad, effect
+    if(va>=ddrawMethodBase+0x1000&&va<ddrawMethodBase+0x3000&&!(va%16)){ddrawToken=va;return ddrawDispatch;}
 #if defined(__ANDROID__) || defined(NFS_D3D9_BACKEND)
     if(va>=0x7e001000u&&va<0x7e010000u&&!(va%16)){d3dToken=va;return d3dDispatch;}
 #endif
@@ -981,9 +1035,10 @@ std::string connectGuestRuntime(const char* executable) {
         // so DirtySock connects via plain TCP on port 20920 instead of SSL 2.0 on 20921.
         if (memory->readable(0x7FBDBCu, 16)) {
             uint8_t* p = static_cast<uint8_t*>(ptr(0x7FBDBCu, 16));
-            if (p && std::memcmp(p, "*pcnfs05.ea.com", 15) == 0) {
-                std::memcpy(p, "pcnfs05.ea.com\0", 16);
-                NFS_RUNTIME_LOG(ANDROID_LOG_INFO, "NFSU2", "Patched 0x7FBDBC: removed '*' from *pcnfs05.ea.com for plain TCP lobby");
+            if (p && p[0] == '*') {
+                std::memmove(p, p + 1, 15);
+                p[15] = 0;
+                NFS_RUNTIME_LOG(ANDROID_LOG_INFO, "NFSU2", "Patched 0x7FBDBC: removed '*' from lobby host for plain TCP");
             }
         }
         // Expand all 3 CarPool budgets to 48MB (0x007fa9d4u, 0x007fa9d8u [SUV], 0x007fa9dcu) to prevent memory allocation halts
@@ -1018,6 +1073,7 @@ std::string connectGuestRuntime(const char* executable) {
             nfs_widescreen_set_hud_safe_area(guestHudSafeArea ? 1 : 0);
             NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU2","Widescreen: %d HUD offsets from scripts/NFSUnderground2.WidescreenFix.dat (safeArea=%d, screenMode=%d)",nfs_widescreen_hud_entries(),int(guestHudSafeArea),guestScreenMode);
         }else NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU2","Widescreen disabled: original 4:3 geometry");
+        applyExtraOptions(hostGameRoot.c_str());
         if(renderWidth.load()&&renderHeight.load())configureAndroidResolutionModes();
         memory->commit(stackBase,stackSize); memory->commit(tib,0x1000);
         State fresh; fresh.esp=stackBase+stackSize-64; fresh.fs=tib; fresh.load();
@@ -1093,7 +1149,7 @@ void setGuestPadConnected(bool connected){
     inputPadConnected=connected;if(!connected)inputPad=InputPad{};
 }
 bool guestGamepadInUse(){return inputPadAcquired.load()>0;}
-void setGuestPadButtonNames(bool playStation){(void)playStation;}
+void setGuestPadButtonNames(bool playStation){padPlayStationNames.store(playStation);}
 void setGuestDisplaySize(unsigned width,unsigned height){displayWidth=width;displayHeight=height;}
 void setGuestResolution(unsigned width,unsigned height){
     std::lock_guard<MachineMutex> lock(machine);if(memory)return;
@@ -1123,9 +1179,10 @@ void setGuestOnlineServer(const std::string& host){
     if(!host.empty())onlineServer=host;
     if(memory&&memory->readable(0x7FBDBCu,16)){
         uint8_t* p=static_cast<uint8_t*>(ptr(0x7FBDBCu,16));
-        if(p&&std::memcmp(p,"*pcnfs05.ea.com",15)==0){
-            std::memcpy(p,"pcnfs05.ea.com\0",16);
-            NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU2","Patched 0x7FBDBC: removed '*' from *pcnfs05.ea.com for plain TCP lobby");
+        if(p&&p[0]=='*'){
+            std::memmove(p, p + 1, 15);
+            p[15] = 0;
+            NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU2","Patched 0x7FBDBC: removed '*' from lobby host for plain TCP");
         }
     }
 }

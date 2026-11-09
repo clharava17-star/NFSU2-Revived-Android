@@ -3,6 +3,7 @@
 
 #include "roam_host_android.h"
 #include "roam_core.h"
+#include "roam_modmenu.h"
 #include "roam_plat.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,7 +25,17 @@
 #include <dirent.h>
 #include <signal.h>
 #include <setjmp.h>
+#include <sys/mman.h>
 #include <jni.h>
+
+/* Bind to the same exported game globals used by the known-working APK.
+ * libnfsu2_android.so is loaded first by GameActivity before this companion. */
+extern ptrdiff_t g_mem_base;
+extern uint32_t g_esp;
+extern uint32_t g_eax;
+extern uint32_t g_ecx;
+extern uint32_t g_edx;
+extern recomp_func_t recomp_lookup(uint32_t va);
 
 ptrdiff_t *g_p_mem_base = NULL;
 uint32_t  *g_p_esp = NULL;
@@ -33,6 +44,33 @@ uint32_t  *g_p_ecx = NULL;
 uint32_t  *g_p_edx = NULL;
 recomp_func_t (*g_p_recomp_lookup)(uint32_t va) = NULL;
 int (*g_p_guest_is_readable)(uint32_t va, uint32_t bytes) = NULL;
+static void (*s_modmenu_guest_key)(unsigned, int) = NULL;
+/* Compatibility with v0.15.19's prebuilt libnfsu2_android.so:
+ * it exports setGuestKey(unsigned, bool), not the newer C bridge name. */
+static void (*s_modmenu_guest_key_legacy)(unsigned, _Bool) = NULL;
+
+static void modmenu_resolve_guest_key(void) {
+    if (s_modmenu_guest_key || s_modmenu_guest_key_legacy) return;
+
+    void *h = dlopen("libnfsu2_android.so", RTLD_NOLOAD | RTLD_NOW | RTLD_GLOBAL);
+    if (!h) h = RTLD_DEFAULT;
+
+    void *symbol = dlsym(h, "nfsu2_android_mod_guest_key");
+    if (symbol) {
+        s_modmenu_guest_key = (void (*)(unsigned, int))symbol;
+    } else {
+        /* Verified in the v0.15.19 ARM64 library: _Z11setGuestKeyjb */
+        symbol = dlsym(h, "_Z11setGuestKeyjb");
+        if (symbol) s_modmenu_guest_key_legacy = (void (*)(unsigned, _Bool))symbol;
+    }
+
+    if (h != RTLD_DEFAULT) dlclose(h);
+}
+
+static void modmenu_send_guest_key(unsigned scan, int down) {
+    if (s_modmenu_guest_key) s_modmenu_guest_key(scan, down);
+    else if (s_modmenu_guest_key_legacy) s_modmenu_guest_key_legacy(scan, down != 0);
+}
 
 static int s_probe_pipe[2] = { -1, -1 };
 static pthread_mutex_t s_probe_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -68,7 +106,9 @@ static inline int probe_mem_readable(const void *ptr, size_t n) {
 }
 
 int roam_android_mem_readable(uint32_t a, uint32_t n) {
-    if (!g_p_mem_base || !*g_p_mem_base || !g_p_esp || *g_p_esp == 0) return 0;
+    /* Reading committed guest addresses does not require a live guest ESP.
+     * ESP is required only before calling lifted game functions. */
+    if (!g_p_mem_base || !*g_p_mem_base) return 0;
     if (a < 0x00010000u || (uint64_t)a + n < 0x00010000u || (uint64_t)a + n > 0x100000000ULL) return 0;
     if (g_p_guest_is_readable) {
         return g_p_guest_is_readable(a, n);
@@ -108,27 +148,288 @@ static inline void roam_android_patch_carpool(void) {
     }
 }
 
-int roam_android_init_symbols(void) {
-    if (!g_p_mem_base) {
-        void *h = dlopen("libnfsu2_android.so", RTLD_NOLOAD | RTLD_GLOBAL);
-        if (!h) h = dlopen("libnfsu2_android.so", RTLD_LAZY | RTLD_GLOBAL);
-        if (!h) h = RTLD_DEFAULT;
+static int roam_android_resolve_symbols(void) {
+    g_p_mem_base = &g_mem_base;
+    g_p_esp = &g_esp;
+    g_p_eax = &g_eax;
+    g_p_ecx = &g_ecx;
+    g_p_edx = &g_edx;
+    g_p_recomp_lookup = &recomp_lookup;
 
-        g_p_mem_base = (ptrdiff_t *)dlsym(h, "g_mem_base");
-        g_p_recomp_lookup = (recomp_func_t (*)(uint32_t))dlsym(h, "recomp_lookup");
-        g_p_esp = (uint32_t *)dlsym(h, "g_esp");
-        g_p_eax = (uint32_t *)dlsym(h, "g_eax");
-        g_p_ecx = (uint32_t *)dlsym(h, "g_ecx");
-        g_p_edx = (uint32_t *)dlsym(h, "g_edx");
-        g_p_guest_is_readable = (int (*)(uint32_t, uint32_t))dlsym(h, "guest_is_readable");
+    /* Optional guard exported only by some runtime variants. */
+    if (!g_p_guest_is_readable) {
+        g_p_guest_is_readable = (int (*)(uint32_t, uint32_t))
+                dlsym(RTLD_DEFAULT, "guest_is_readable");
     }
-
-    if (g_p_mem_base && *g_p_mem_base != 0 && g_p_esp && *g_p_esp != 0) {
-        if (!g_carpool_patched) roam_android_patch_carpool();
-        return 1;
-    }
-    return 0;
+    modmenu_resolve_guest_key();
+    return *g_p_mem_base != 0;
 }
+
+int roam_android_init_symbols(void) {
+    if (!roam_android_resolve_symbols() || !g_p_esp || *g_p_esp == 0
+            || !g_p_recomp_lookup || !g_p_eax || !g_p_ecx || !g_p_edx) return 0;
+    if (!g_carpool_patched) roam_android_patch_carpool();
+    return 1;
+}
+
+static pthread_mutex_t g_mod_telemetry_mu = PTHREAD_MUTEX_INITIALIZER;
+static jfloat g_mod_telemetry[34] = {0, 0, 0, 0, -1, -99, 0, 0, -1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
+static _Atomic uint32_t g_mod_frame_ticks = 0;
+static _Atomic uint32_t g_mod_snapshot_updates = 0;
+static _Atomic int g_mod_memory_ready = 0;
+static _Atomic int g_mod_stack_ready = 0;
+/*
+ * [0] snapshot valid, [1] GameFlow state, [2] speed m/s, [3] RPM,
+ * [4] throttle (-1 if controller unavailable), [5] signed gear (-1 reverse, 0 neutral, 1 first...),
+ * [6] Player* readable, [7] Car* readable, [8] race coordinator state,
+ * [9] race type, [10] track ID, [11] career race active, [12] in-world race (flow=6 and race state=4),
+ * [13] frame-hook count, [14] telemetry-update count, [15] guest memory ready, [16] guest ESP ready,
+ * [17] flow address readable, [18] player-slot address readable, [19] race address readable,
+ * [20] g_mem_base symbol found, [21] game memory image mapped, [22] g_esp symbol found,
+ * [23] player CarTypeInfo index, [24] active CPI idle RPM,
+ * [25] active CPI max RPM, [26] active Drag-model shift threshold (redline - 100),
+ * [27] current DriveTrain::shiftUp[gear], [28] RateShift range R for that gear,
+ * [29] active forward gear count, [30] DriveTrain's current Gear enum (0=R,1=N,2=1st),
+ * [31] last DriveTrain shiftBonus, [32] RPM value recorded by last shift.
+ *
+ * The active CPI is read through Car+0x10 (RideInfo), RideInfo+0x10 (RidePhysicsInfo),
+ * then inline CPI at RPI+0x30. The active DriveTrain is Car+0x34 (PhysicsMover),
+ * then PhysicsMover+0x4C. It provides shiftUp[9] at +0x84, last shift result at +0x68,
+ * rpmAtShift at +0x6C, perfectRangeMul at +0xE4, and perfType at +0xF0.
+ * PerfectShiftMaxRPMDiff is the game's 4x9 table at guest VA 0x007FBF60.
+ * ShiftMatch (original 0x594F20) computes R = table[perfType*9+gear] * perfectRangeMul.
+ * It returns maximum match (1.0) only for RPM strictly above shiftUp[gear] and
+ * below shiftUp[gear] + (1.0 - gearboxMatchWindow) * R. The returned field [28]
+ * is this exact per-gear upper-window delta, not a guessed percentage of R.
+ * gearboxMatchWindow is read live from guest VA 0x007FBF5C. No game memory is written.
+ * Gear and throttle use the player snapshot fields documented in local_state().
+ */
+
+static void mod_telemetry_publish(const jfloat values[34]) {
+    pthread_mutex_lock(&g_mod_telemetry_mu);
+    memcpy(g_mod_telemetry, values, sizeof(g_mod_telemetry));
+    pthread_mutex_unlock(&g_mod_telemetry_mu);
+}
+
+static void mod_telemetry_update(void) {
+    jfloat next[34] = {0, 0, 0, 0, -1.0f, -99.0f, 0, 0, -1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f};
+    next[13] = (jfloat)atomic_load(&g_mod_frame_ticks);
+    next[14] = (jfloat)(atomic_fetch_add(&g_mod_snapshot_updates, 1) + 1);
+    next[15] = atomic_load(&g_mod_memory_ready) ? 1.0f : 0.0f;
+    next[16] = atomic_load(&g_mod_stack_ready) ? 1.0f : 0.0f;
+    next[20] = g_p_mem_base ? 1.0f : 0.0f;
+    next[21] = (g_p_mem_base && *g_p_mem_base) ? 1.0f : 0.0f;
+    next[22] = g_p_esp ? 1.0f : 0.0f;
+    const uint32_t flow_va = 0x008654A4u;       /* G_FLOW: 3 front end, 6 in world */
+    const uint32_t player_va = 0x008900ACu;     /* SPLIT_PLAYERS_INDEX: Player* */
+    const uint32_t race_va = 0x00890118u;       /* G_RACE: +0 state, 4 while racing */
+    const uint32_t race_type_va = 0x0089E7B0u;  /* G_RACETYPE */
+    const uint32_t track_va = 0x0089E7A0u;      /* G_TRACK */
+    const uint32_t career_race_va = 0x00863470u;/* G_CAREER_RACE */
+
+    if (!g_p_mem_base || !*g_p_mem_base) {
+        mod_telemetry_publish(next);
+        return;
+    }
+
+    next[17] = rh_mem_committed(flow_va, 4) ? 1.0f : 0.0f;
+    next[18] = rh_mem_committed(player_va, 4) ? 1.0f : 0.0f;
+    next[19] = rh_mem_committed(race_va, 4) ? 1.0f : 0.0f;
+    if (next[17] > 0.5f) next[1] = (jfloat)MR32(flow_va);
+    if (rh_mem_committed(race_type_va, 4)) next[9] = (jfloat)MR32(race_type_va);
+    if (rh_mem_committed(track_va, 4)) next[10] = (jfloat)MR32(track_va);
+    if (rh_mem_committed(career_race_va, 4)) {
+        const uint32_t career_race = MR32(career_race_va);
+        next[11] = career_race ? 1.0f : 0.0f;
+        /* The Career race object uses type 4 for Drag; publish an explicit
+         * validated mode flag so Java does not guess from the global enum. */
+        if (career_race && career_race <= 0xFFFFFFCAu
+                && rh_mem_committed(career_race + 0x0Fu, 1u)) {
+            next[33] = MR8(career_race + 0x0Fu) == 4u ? 1.0f : 0.0f;
+        }
+    }
+
+    if (rh_mem_committed(race_va, 4)) {
+        const uint32_t race = MR32(race_va);
+        if (race && race <= 0xFFFFF3BBu && rh_mem_committed(race, 0xC44u)) {
+            next[8] = (jfloat)MR32(race);
+        }
+    }
+    next[12] = (next[1] == 6.0f && next[8] == 4.0f) ? 1.0f : 0.0f;
+
+    if (next[18] < 0.5f) {
+        mod_telemetry_publish(next);
+        return;
+    }
+    const uint32_t player = MR32(player_va);
+    if (!player || player > 0xFFFFFFFBu || !rh_mem_committed(player + 4u, 4)) {
+        mod_telemetry_publish(next);
+        return;
+    }
+    next[6] = 1.0f;
+
+    const uint32_t car = MR32(player + 4u);
+    if (!car || car > 0xFFFFF61Bu || !rh_mem_committed(car, 0x9E4u)) {
+        mod_telemetry_publish(next);
+        return;
+    }
+    next[7] = 1.0f;
+
+    const float speed = MRF32(car + 0x42Cu);
+    const float rpm = MRF32(car + 0x440u);
+    const int gear = (int8_t)MR32(car + 0x434u); /* same field as roam_game.c local_state() */
+
+    /* Resolve the current vehicle identity from CarTypeInfo. */
+    const uint32_t car_types_va = 0x008A1CCCu; /* G_CARTYPES */
+    const uint32_t car_type_stride = 0x890u;
+    if (car <= 0xFFFFFFF3u
+            && rh_mem_committed(car + 0x0Cu, 4)
+            && rh_mem_committed(car_types_va, 4)) {
+        const uint32_t car_types = MR32(car_types_va);
+        const uint32_t type_info = MR32(car + 0x0Cu);
+        if (car_types && type_info >= car_types
+                && ((type_info - car_types) % car_type_stride) == 0u) {
+            const uint32_t type_index = (type_info - car_types) / car_type_stride;
+            if (type_index < 512u) next[23] = (jfloat)type_index;
+        }
+    }
+
+    /* Read the *active tuned* physics copy, not the base CarTypeInfo sound range:
+       Car+0x10 -> RideInfo; RideInfo+0x10 -> RidePhysicsInfo; CPI is inline at RPI+0x30.
+       RidePhysicsInfo::GetCarPhysicsInfo returns this block after performance,
+       ECU/turbo, transmission, unique and race-mode modifiers have been applied. */
+    uint32_t active_cpi = 0u;
+    if (car <= 0xFFFFFFEFu && rh_mem_committed(car + 0x10u, 4)) {
+        const uint32_t ride = MR32(car + 0x10u);
+        if (ride && ride <= 0xFFFFFFEBu && rh_mem_committed(ride + 0x10u, 4)) {
+            const uint32_t ride_physics = MR32(ride + 0x10u);
+            if (ride_physics && ride_physics <= 0xFFFFFFCFu) {
+                const uint32_t cpi = ride_physics + 0x30u;
+                if (rh_mem_committed(cpi, 0x1FCu)) {
+                    active_cpi = cpi;
+                    const float idle_rpm = MRF32(cpi + 0x1F0u);
+                    const float redline_rpm = MRF32(cpi + 0x1F4u);
+                    const float max_rpm = MRF32(cpi + 0x1F8u);
+                    const float drag_shift_rpm = redline_rpm - 100.0f;
+                    if (isfinite(idle_rpm) && isfinite(redline_rpm) && isfinite(max_rpm)
+                            && idle_rpm >= 300.0f && idle_rpm <= 4000.0f
+                            && redline_rpm >= idle_rpm + 1000.0f && redline_rpm <= 20000.0f
+                            && max_rpm >= redline_rpm && max_rpm <= 22000.0f
+                            && drag_shift_rpm > idle_rpm + 500.0f
+                            && drag_shift_rpm < max_rpm) {
+                        next[24] = idle_rpm;
+                        next[25] = max_rpm;
+                        next[26] = drag_shift_rpm;
+                    }
+                }
+            }
+        }
+    }
+
+    /* Read the game's exact per-gear shift-up point and Perfect Shift range.
+       Car +0x34 -> PhysicsMover (vtbl 0x7A25E0), mover +0x4C -> DriveTrain
+       (vtbl 0x7A2508). The index used here matches Car::gear
+       (1=1st, 2=2nd, etc.), as validated by modmenu_shift_window(). */
+    if (rh_mem_committed(car + 0x34u, 4)) {
+        const uint32_t mover = MR32(car + 0x34u);
+        if (mover && mover <= 0xFFFFFF0Fu && rh_mem_committed(mover, 0x130u)
+                && MR32(mover) == 0x007A25E0u
+                && rh_mem_committed(mover + 0x4Cu, 4)) {
+            const uint32_t drive_train = MR32(mover + 0x4Cu);
+            if (drive_train && drive_train <= 0xFFFFFF0Bu
+                    && rh_mem_committed(drive_train, 0xF4u)
+                    && MR32(drive_train) == 0x007A2508u) {
+                const int drive_gear = (int32_t)MR32(drive_train + 0x3Cu);
+                const float shift_up = MRF32(drive_train + 0x84u + 4u * (uint32_t)(drive_gear >= 0 && drive_gear <= 8 ? drive_gear : 0));
+                const float perfect_range_mul = MRF32(drive_train + 0xE4u);
+                const int perf_type = (int32_t)MR32(drive_train + 0xF0u);
+                const int forward_gears = active_cpi && rh_mem_committed(active_cpi + 0x1C8u, 4)
+                        ? (int32_t)MR32(active_cpi + 0x1C8u) : 0;
+                const int max_diff_index = (perf_type >= 0 && perf_type <= 3 && drive_gear >= 0 && drive_gear <= 8)
+                        ? perf_type * 9 + drive_gear : -1;
+                /* Match the existing native drivetrain helper: Car and DriveTrain
+                 * store the same forward gear index (1=1st, 2=2nd, ...). */
+                if (drive_gear >= 1 && drive_gear <= 7
+                        && forward_gears >= 1 && forward_gears <= 6
+                        && drive_gear <= forward_gears
+                        && perf_type >= 0 && perf_type <= 3
+                        && isfinite(shift_up) && shift_up >= 1000.0f && shift_up <= 20000.0f
+                        && isfinite(perfect_range_mul) && perfect_range_mul > 0.0f && perfect_range_mul <= 5.0f
+                        && max_diff_index >= 0 && max_diff_index < 36
+                        && rh_mem_committed(0x007FBF60u + 4u * (uint32_t)max_diff_index, 4)) {
+                    const float max_rpm_diff = MRF32(0x007FBF60u + 4u * (uint32_t)max_diff_index);
+                    const float gearbox_match_window = rh_mem_committed(0x007FBF5Cu, 4)
+                            ? MRF32(0x007FBF5Cu) : -1.0f;
+                    const float raw_match_window_rpm = max_rpm_diff * perfect_range_mul;
+                    /* Exact maximum-match band from ShiftMatch (0x594F20):
+                       shiftUp < RPM < shiftUp + (1 - gearboxMatchWindow) * rawWindow. */
+                    const float perfect_range = (1.0f - gearbox_match_window) * raw_match_window_rpm;
+                    if (isfinite(max_rpm_diff) && max_rpm_diff > 0.0f
+                            && isfinite(gearbox_match_window) && gearbox_match_window > 0.0f
+                            && gearbox_match_window < 1.0f
+                            && isfinite(raw_match_window_rpm) && raw_match_window_rpm > 0.0f
+                            && isfinite(perfect_range) && perfect_range > 0.0f && perfect_range <= 5000.0f) {
+                        next[27] = shift_up;
+                        next[28] = perfect_range;
+                        next[29] = (jfloat)forward_gears;
+                        next[30] = (jfloat)drive_gear;
+                        const float shift_bonus = MRF32(drive_train + 0x68u);
+                        const float rpm_at_shift = MRF32(drive_train + 0x6Cu);
+                        if (isfinite(shift_bonus) && shift_bonus >= -1.0f && shift_bonus <= 1.0f)
+                            next[31] = shift_bonus;
+                        if (isfinite(rpm_at_shift) && rpm_at_shift >= 0.0f && rpm_at_shift <= 22000.0f)
+                            next[32] = rpm_at_shift;
+                    }
+                }
+            }
+        }
+    }
+
+    float throttle = -1.0f;
+    if (car <= 0xFFFFFFCBu && rh_mem_committed(car + 0x30u, 4)) {
+        const uint32_t controller = MR32(car + 0x30u);
+        if (controller && controller <= 0xFFFFFDEBu
+                && rh_mem_committed(controller + 0x20Cu, 4)) {
+            throttle = MRF32(controller + 0x20Cu); /* same controller field as local_state() */
+        }
+    }
+
+    if (!isfinite(speed) || !isfinite(rpm)
+            || speed < -1.0f || speed > 250.0f || rpm < 0.0f || rpm > 20000.0f
+            || gear < -1 || gear > 8
+            || (throttle >= 0.0f && (!isfinite(throttle) || throttle > 1.5f))) {
+        mod_telemetry_publish(next);
+        return;
+    }
+
+    next[2] = speed;
+    next[3] = rpm;
+    next[4] = throttle;
+    next[5] = (jfloat)gear;
+    /* Snapshot validity is independent from race state; the UI shows both.
+       Calibration still requires the documented in-world race state. */
+    next[0] = 1.0f;
+    mod_telemetry_publish(next);
+}
+
+/* Copy the latest render-thread snapshot into a caller-owned Java array.
+ * The UI thread must never walk guest memory: that work belongs to the game
+ * frame hook, which publishes one coherent snapshot per rendered frame. */
+static void mod_telemetry_copy_to_array(JNIEnv *env, jfloatArray result) {
+    if (!result || (*env)->GetArrayLength(env, result) < 34) return;
+    jfloat snapshot[34];
+    pthread_mutex_lock(&g_mod_telemetry_mu);
+    memcpy(snapshot, g_mod_telemetry, sizeof(snapshot));
+    pthread_mutex_unlock(&g_mod_telemetry_mu);
+    (*env)->SetFloatArrayRegion(env, result, 0, 34, snapshot);
+}
+
+static jfloatArray mod_telemetry_array(JNIEnv *env) {
+    jfloatArray result = (*env)->NewFloatArray(env, 34);
+    if (result) mod_telemetry_copy_to_array(env, result);
+    return result;
+}
+
 
 static int             g_fd = -1;
 static pthread_t       g_thr;
@@ -144,6 +445,32 @@ static char            g_player_name[64] = "Racer";
 static char            g_peers_str[256] = "127.0.0.1:47211";
 static int             g_ghost_mode = 1;
 
+/* The Android UI owns the switches; the render/game thread consumes them. */
+static _Atomic int     s_modmenu_flags = 0;
+static _Atomic int     s_modmenu_shift_key = 0x2a;
+static int             s_modmenu_pressed_key = -1; /* game thread only */
+
+int roam_modmenu_flags(void) { return atomic_load(&s_modmenu_flags); }
+int roam_modmenu_shift_key(void) { return atomic_load(&s_modmenu_shift_key); }
+
+static void modmenu_release_key(void) {
+    if (s_modmenu_pressed_key < 0) return;
+    modmenu_resolve_guest_key();
+    modmenu_send_guest_key((unsigned)s_modmenu_pressed_key, 0);
+    s_modmenu_pressed_key = -1;
+}
+
+int roam_modmenu_key_pulse(int scan) {
+    if (scan <= 0 || scan >= 256) return 0;
+    modmenu_resolve_guest_key();
+    if (!s_modmenu_guest_key && !s_modmenu_guest_key_legacy) return 0;
+    modmenu_release_key();
+    modmenu_send_guest_key((unsigned)scan, 1);
+    s_modmenu_pressed_key = scan; /* released at the next frame hook */
+    return 1;
+}
+
+
 /* Quick Chat state */
 static atomic_int      g_say_pick = -1;
 static int             g_qc_open = -1;
@@ -156,6 +483,8 @@ static atomic_int      g_horn_held = 0;
 int roam_android_horn_held(void) {
     return atomic_load(&g_horn_held);
 }
+
+static void roam_apply_gamepad_layout(int is_ps2);
 
 static JavaVM         *g_jvm = NULL;
 static jclass          g_client_class = NULL;
@@ -577,6 +906,179 @@ static void hiddenraces_frame_tick(void) {
     g_hidden_done = races;
     __android_log_print(ANDROID_LOG_INFO, "NFSU2-Roam", "[career] show hidden races: %d of %u races out of hiding, %d caps raised to %d",
                         n, nr, caps, CAP);
+}
+
+/* Extra Options (ExOpts Team) Memory Patches & Dumb AI (AutoPilot) Hack */
+static void extraoptions_init_patches(void) {
+    if (!rh_mem_committed(0x00400000u, 0x1000)) return;
+
+    // Optical drive / Disc 2 bypass
+    if (rh_mem_committed(0x005C0D3Fu, 1)) MR8(0x005C0D3Fu) = 0x78;
+    if (rh_mem_committed(0x005C0D54u, 1)) MR8(0x005C0D54u) = 0x00;
+
+    // Ground Shadow Alignment Fix (0.015f instead of 0.04f to sit flush with road)
+    if (rh_mem_committed(0x007A66B4u, 4)) MRF32(0x007A66B4u) = 0.015f;
+
+    // Lap Controllers (0 to 127 laps)
+    if (rh_mem_committed(0x004B3D82u, 30)) {
+        MR8(0x004B3D82u) = 0;   // min lap decrement
+        MR8(0x004B3D9Bu) = 0;   // min lap increment
+        MR8(0x004B3D86u) = 127; // max lap decrement
+        MR8(0x004B3D97u) = 127; // max lap increment
+    }
+    if (rh_mem_committed(0x004B407Fu, 1)) MR8(0x004B407Fu) = 5; // KO laps
+
+    // LAN Laps (0 to 127)
+    if (rh_mem_committed(0x004B3E7Au, 1)) MR8(0x004B3E7Au) = 0;
+    if (rh_mem_committed(0x004B3EE4u, 1)) MR8(0x004B3EE4u) = 0;
+    if (rh_mem_committed(0x004B3E9Eu, 1)) MR8(0x004B3E9Eu) = 0;
+    if (rh_mem_committed(0x004B3F30u, 1)) MR8(0x004B3F30u) = 127;
+    if (rh_mem_committed(0x004B3F41u, 1)) MR8(0x004B3F41u) = 127;
+
+    // Opponent Controllers (0 to 5 opponents)
+    if (rh_mem_committed(0x004B382Bu, 70)) {
+        MR32(0x004B382Bu) = 0x90909090u;
+        MR16(0x004B382Fu) = 0x9090u;
+        MR8(0x004B3834u) = 5; // Max CPU
+        MR8(0x004B3863u) = 0; // Min CPU
+        MR32(0x004B3867u) = 0x90909090u;
+    }
+    if (rh_mem_committed(0x004B4075u, 1)) MR8(0x004B4075u) = 5; // KO CPU
+
+    // LAN Players (up to 6)
+    if (rh_mem_committed(0x004B31AAu, 4)) {
+        MR8(0x004B31AAu) = 0xB0;
+        MR8(0x004B31ABu) = 6;
+        MR16(0x004B31ACu) = 0x9090u;
+    }
+
+    // Unfreeze KO (ShowMoreRaceOptions)
+    if (rh_mem_committed(0x004B4068u, 1)) MR8(0x004B4068u) = 0xEB;
+    if (rh_mem_committed(0x004B3E14u, 1)) MR8(0x004B3E14u) = 0xEB;
+    if (rh_mem_committed(0x004B3903u, 1)) MR8(0x004B3903u) = 0xEB;
+
+    // Regional Cars (Peugeot 106 & Opel Corsa unlocked on NTSC)
+    if (rh_mem_committed(0x007F7C48u, 16)) {
+        MR32(0x007F7C48u) = 0xFFFFFFFFu; // CORSA
+        MR32(0x007F7C4Cu) = 0xFFFFFFFFu; // PEUGOT106
+        MR32(0x007F7C50u) = 0xFFFFFFFFu; // CIVIC
+        MR32(0x007F7C54u) = 0xFFFFFFFFu; // RSX
+    }
+    if (rh_mem_committed(0x004FEB9Du, 1)) MR8(0x004FEB9Du) = 0x1C;
+    if (rh_mem_committed(0x007F6DBEu, 2)) {
+        MR8(0x007F6DBEu) = 0x07;
+        MR8(0x007F6DBFu) = 0x06;
+    }
+
+    // Carbon-style 1-Lap race progress ("COMPLETED %X")
+    if (rh_mem_committed(0x004AA27Fu, 8)) {
+        MR8(0x004AA27Fu) = 0xBC;
+        MR8(0x004AA283u) = 0x3C;
+        MR8(0x004AA284u) = 0x01;
+        MR8(0x004AA286u) = 0x85;
+    }
+
+    // Menu: Free Run track select, Outrun in Quick Race, Outrun track select
+    if (rh_mem_committed(0x004B2AE3u, 2)) MR16(0x004B2AE3u) = 0x9090u;
+    if (rh_mem_committed(0x004B2F3Eu, 2)) MR16(0x004B2F3Eu) = 0x9090u;
+    if (rh_mem_committed(0x004B2AA0u, 2)) MR16(0x004B2AA0u) = 0x9090u;
+    if (rh_mem_committed(0x005268F8u, 2)) MR16(0x005268F8u) = 0x9090u;
+
+    // Subtitles
+    if (rh_mem_committed(0x004A8BA0u, 2)) MR16(0x004A8BA0u) = 0x9090u;
+    if (rh_mem_committed(0x00553A65u, 2)) MR16(0x00553A65u) = 0x9090u;
+    if (rh_mem_committed(0x0055B061u, 2)) MR16(0x0055B061u) = 0x9090u;
+
+    // 3D Fixes: damaged cracked glass, disappearing wheels, megalow parts
+    if (rh_mem_committed(0x0059FC13u, 1)) MR8(0x0059FC13u) = 0xEB;
+    if (rh_mem_committed(0x0049B61Eu, 1)) MR8(0x0049B61Eu) = 0xEB;
+    if (rh_mem_committed(0x0054FBD7u, 1)) MR8(0x0054FBD7u) = 0xEB;
+
+    // Drift: show drift as AxB, plus sign, max 9x multiplier
+    if (rh_mem_committed(0x004AB792u, 3)) {
+        MR8(0x004AB792u) = 0xB0;
+        MR8(0x004AB793u) = 0x01;
+        MR8(0x004AB794u) = 0x90;
+    }
+    if (rh_mem_committed(0x004AB7DBu, 1)) MR8(0x004AB7DBu) = 0x74;
+    if (rh_mem_committed(0x0056CC98u, 10)) {
+        MR8(0x0056CC98u) = 0xCF;
+        MR8(0x0056CC9Cu) = 0x00;
+        MR8(0x0056CC9Du) = 0x50;
+        MR8(0x0056CC9Eu) = 0x92;
+        MR8(0x0056CC58u) = 9;
+        MR8(0x0056CC90u) = 9;
+    }
+    if (rh_mem_committed(0x00925004u, 32 * 4)) {
+        static const int thresholds[32] = {
+            350, 1400, 4200, 11200, 22400, 38080, 57120, 85680,
+            300, 1200, 3600, 9600, 19200, 32640, 48960, 73440,
+            250, 1000, 3000, 8000, 16000, 27200, 40800, 61200,
+            200, 800, 2400, 6400, 12800, 21760, 32640, 48960
+        };
+        for (int i = 0; i < 32; i++) {
+            MR32(0x00925004u + (uint32_t)(i * 4)) = (uint32_t)thresholds[i];
+        }
+    }
+
+    __android_log_print(ANDROID_LOG_INFO, "NFSU2-ExtraOptions",
+                        "Extra Options memory patches applied: regional cars, laps (0-127), opponents (0-5), 3D fixes, drift 9x, outrun");
+}
+
+static void extraoptions_frame_tick(void) {
+    static int s_init_done = 0;
+    if (!s_init_done) {
+        if (rh_mem_committed(0x00400000u, 0x1000)) {
+            s_init_done = 1;
+            extraoptions_init_patches();
+        }
+    }
+
+    if (!rh_mem_committed(0x008654A4u, 4) || !rh_mem_committed(0x008900ACu, 4)) return;
+
+    // Dumb AI (AutoDrive) State Machine
+    int dumb_ai = 0;
+    const char *e = getenv("NFSU2_DUMB_AI");
+    if (e && *e && *e != '0' && strcasecmp(e, "off") && strcasecmp(e, "no") && strcasecmp(e, "false")) {
+        dumb_ai = 1;
+    }
+
+    uint32_t flow = MR32(0x008654A4u); // TheGameFlowManager (6 = Gameplay)
+    static uint32_t s_applied_player = 0;
+    static int s_applied_state = -1;
+
+    if (flow != 6) {
+        s_applied_player = 0;
+        s_applied_state = -1;
+        return;
+    }
+
+    uint32_t player = MR32(0x008900ACu); // _PlayersByNumber[0]
+    if (!player) {
+        // Player not ready yet in this race frame; reset state so we apply immediately when player appears
+        s_applied_player = 0;
+        s_applied_state = -1;
+        return;
+    }
+
+    if (s_applied_player != player || s_applied_state != dumb_ai) {
+        if (dumb_ai) {
+            // Player_AutoPilotOn (0x005FAE20) with ecx = player (__thiscall)
+            roam_android_call(0x005FAE20u, player, 0, 0, NULL);
+            __android_log_print(ANDROID_LOG_INFO, "NFSU2-ExtraOptions",
+                                "Dumb AI (AutoPilot) ENABLED on player car 0x%08x", player);
+        } else {
+            // Player_AutoPilotOff (0x005FAF10) with ecx = player
+            roam_android_call(0x005FAF10u, player, 0, 0, NULL);
+            // Player_SetInputMode (0x00605C70) with ecx = player, mode = 2
+            uint32_t arg = 2;
+            roam_android_call(0x00605C70u, player, 0, 1, &arg);
+            __android_log_print(ANDROID_LOG_INFO, "NFSU2-ExtraOptions",
+                                "Dumb AI (AutoPilot) DISABLED on player car 0x%08x", player);
+        }
+        s_applied_player = player;
+        s_applied_state = dumb_ai;
+    }
 }
 
 /* In-game menu button scaling (Help bar and arrows up to 200%) */
@@ -1038,10 +1540,44 @@ static void resolution_frame_tick(void) {
     }
 }
 
+static void lobby_frame_tick(void) {
+    static int s_lobby_patched = 0;
+    if (s_lobby_patched || !g_p_mem_base || !*g_p_mem_base) return;
+    if (rh_mem_committed(0x007fbdbcu, 16)) {
+        uint8_t *p = (uint8_t *)GPTR(0x007fbdbcu);
+        if (p && p[0] == '*') {
+            memmove(p, p + 1, 15);
+            p[15] = '\0';
+            s_lobby_patched = 1;
+            __android_log_print(ANDROID_LOG_INFO, "NFSU2", "roam: patched 0x007fbdbc: removed '*' from lobby host for plain TCP");
+        }
+    }
+}
+
 static _Atomic int s_tick_in_progress = 0;
 __attribute__((visibility("default"))) void nfs_roam_frame_tick(void) {
-    if (!roam_android_init_symbols() || !g_p_esp || !*g_p_esp) return;
+    /* The native Mod Menu shift helper runs inside roam_game_frame(). */
+    const int stack_ready = roam_android_init_symbols();
+    if (!g_p_mem_base || !*g_p_mem_base) {
+        modmenu_release_key();
+        return;
+    }
     if (atomic_exchange(&s_tick_in_progress, 1) != 0) return;
+    const uint32_t frame_tick = atomic_fetch_add(&g_mod_frame_ticks, 1) + 1u;
+    atomic_store(&g_mod_memory_ready, 1);
+    atomic_store(&g_mod_stack_ready, (g_p_esp && *g_p_esp) ? 1 : 0);
+
+    /* Telemetry is diagnostic only; native Auto Shift reads the live drivetrain
+     * directly from modmenu_game_frame(). Refresh this snapshot at 2 Hz. */
+    if ((frame_tick & 31u) == 0u) mod_telemetry_update();
+
+    /* Always release a previous one-frame Shift pulse, including if the
+     * guest call stack is temporarily unavailable. */
+    modmenu_release_key();
+    if (!stack_ready || !g_p_esp || !*g_p_esp) {
+        atomic_store(&s_tick_in_progress, 0);
+        return;
+    }
     pace_frame();
     static int s_perf_bound = 0;
     if (!s_perf_bound || (g_frame_count % 300) == 0) {
@@ -1050,9 +1586,18 @@ __attribute__((visibility("default"))) void nfs_roam_frame_tick(void) {
     }
     g_frame_count++;
     hiddenraces_frame_tick();
+    extraoptions_frame_tick();
+    lobby_frame_tick();
     framerate_pacing_fix();
     resolution_frame_tick();
     look_camera_frame_tick();
+    static int s_gamepad_hooked_tick = 0;
+    if (!s_gamepad_hooked_tick) {
+        roam_apply_gamepad_layout(0);
+        s_gamepad_hooked_tick = 1;
+    }
+    /* roam_game_frame() calls modmenu_game_frame() before its multiplayer
+     * early-return, so Smart Perfect Shift is evaluated on this game frame. */
     roam_game_frame(NULL);
     atomic_store(&s_tick_in_progress, 0);
 }
@@ -1420,6 +1965,19 @@ JNIEXPORT jintArray JNICALL Java_io_mininxd_nfsu2_GameActivity_nativeGetActionKe
     return get_action_keys_array(env);
 }
 
+JNIEXPORT jfloatArray JNICALL Java_io_mininxd_nfsu2_net_RoamNativeBridge_nativeGetGameTelemetry(
+        JNIEnv *env, jclass clazz) {
+    (void)clazz;
+    return mod_telemetry_array(env);
+}
+
+JNIEXPORT void JNICALL Java_io_mininxd_nfsu2_net_RoamNativeBridge_nativeSetModCheats(
+        JNIEnv *env, jclass clazz, jint flags, jint shift_key) {
+    (void)env; (void)clazz;
+    atomic_store(&s_modmenu_flags, flags & (NFSU2_MOD_AUTO_SHIFT | NFSU2_MOD_INFINITE_NOS));
+    atomic_store(&s_modmenu_shift_key, (shift_key > 0 && shift_key < 256) ? shift_key : 0x2a);
+}
+
 /* JNI Bindings for io.mininxd.nfsu2.PerformanceCores */
 JNIEXPORT jint JNICALL Java_io_mininxd_nfsu2_PerformanceCores_nativeBindToPerformanceCores(
         JNIEnv *env, jclass clazz) {
@@ -1640,7 +2198,35 @@ static VkResult_t guarded_vkCreateDevice(
         if (!supported.multiViewport && safeFeatures.multiViewport) {
             safeFeatures.multiViewport = 0;
         }
+        /* Ensure robustBufferAccess matches physical device capabilities for Adreno stability */
+        if (supported.robustBufferAccess) {
+            safeFeatures.robustBufferAccess = 1;
+        } else {
+            safeFeatures.robustBufferAccess = 0;
+        }
         safeInfo.pEnabledFeatures = &safeFeatures;
+    }
+
+    typedef struct {
+        uint32_t sType;
+        void* pNext;
+        uint32_t robustBufferAccess2;
+        uint32_t robustImageAccess2;
+        uint32_t nullDescriptor;
+    } VkPhysicalDeviceRobustness2FeaturesEXT_compat_t;
+
+    const void* cur_next = pCreateInfo->pNext;
+    while (cur_next) {
+        const uint32_t* header = (const uint32_t*)cur_next;
+        if (header[0] == 1000286000 /* VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT */) {
+            const VkPhysicalDeviceRobustness2FeaturesEXT_compat_t* rob2 =
+                (const VkPhysicalDeviceRobustness2FeaturesEXT_compat_t*)cur_next;
+            __android_log_print(ANDROID_LOG_INFO, "NFSU2",
+                "Adreno/Vulkan: VK_EXT_robustness2 active in vkCreateDevice (robustBufferAccess2=%u, robustImageAccess2=%u, nullDescriptor=%u)",
+                rob2->robustBufferAccess2, rob2->robustImageAccess2, rob2->nullDescriptor);
+            break;
+        }
+        cur_next = *((const void* const*)((const char*)cur_next + 8));
     }
 
     return s_real_vkCreateDevice(physicalDevice, &safeInfo, pAllocator, pDevice);
@@ -1808,8 +2394,120 @@ static void install_powervr_fault_guard(void) {
     __android_log_print(ANDROID_LOG_INFO, "NFSU2", "PowerVR Fault Guard installed successfully for DXVK");
 }
 
+/* ========================================================================= */
+/* Gamepad Layout & LS/RS Controller Input Fix                               */
+/* ========================================================================= */
+struct RoamPadObject {
+    uint32_t guidData1;
+    uint32_t offset;
+    uint32_t type;
+    uint32_t flags;
+    const char *name;
+};
+
+static const char *s_ps2_pad_names[] = {
+    "Left Stick X", "Left Stick Y", "Trigger/Gas",
+    "Right Stick X", "Right Stick Y", "Right Stick Z",
+    "D-Pad",
+    "Cross", "Circle", "Square", "Triangle",
+    "L1", "R1",
+    "Select", "Start",
+    "L3", "R3"
+};
+
+static const char *s_xbox_pad_names[] = {
+    "X Axis", "Y Axis", "Z-Axis",
+    "X Rotation", "Y Rotation", "Z Rotation",
+    "D-pad",
+    "A", "B", "X", "Y",
+    "LB", "RB",
+    "Back", "Start",
+    "LS", "RS"
+};
+
+__attribute__((visibility("default")))
+int _ZN12GamepadInput9buttonForEi(int code) {
+    switch (code) {
+        case 96: case 188: case 23: return 0;   /* A, Button 1, Dpad Center -> A */
+        case 97: case 189: return 1;           /* B, Button 2 -> B */
+        case 99: case 190: return 2;           /* X, Button 3 -> X */
+        case 100: case 191: return 3;          /* Y, Button 4 -> Y */
+        case 102: case 192: return 4;          /* L1, Button 5 -> L1 */
+        case 103: case 193: return 5;          /* R1, Button 6 -> R1 */
+        case 104: case 194: return 6;          /* L2, Button 7 -> L2 */
+        case 105: case 195: return 7;          /* R2, Button 8 -> R2 */
+        case 108: case 197: case 82: return 8; /* Start, Button 10, Menu -> Start */
+        case 109: case 196: case 4: return 9;  /* Select, Button 9, Back -> Select */
+        case 106: case 198: case 200: case 202: return 10; /* ThumbL (106), Button 11 (198), Button 13 (200), Button 15 (202) -> ThumbL (LS / L3) */
+        case 107: case 199: case 201: case 203: return 11; /* ThumbR (107), Button 12 (199), Button 14 (201), Button 16 (203) -> ThumbR (RS / R3) */
+        case 19: return 12;                    /* Dpad Up */
+        case 20: return 13;                    /* Dpad Down */
+        case 21: return 14;                    /* Dpad Left */
+        case 22: return 15;                    /* Dpad Right */
+        default: return -1;
+    }
+}
+
+static void roam_apply_gamepad_layout(int is_ps2) {
+    void *h = dlopen("libnfsu2_android.so", RTLD_NOLOAD | RTLD_GLOBAL);
+    if (!h) h = dlopen("libnfsu2_android.so", RTLD_LAZY | RTLD_GLOBAL);
+    void *sym = dlsym(h ? h : RTLD_DEFAULT, "recomp_lookup");
+    if (!sym) sym = dlsym(h ? h : RTLD_DEFAULT, "g_mem_base");
+    if (!sym) sym = dlsym(RTLD_DEFAULT, "_ZN12GamepadInput9buttonForEi");
+    Dl_info dlinfo;
+    if (sym && dladdr(sym, &dlinfo) && dlinfo.dli_fbase) {
+        uintptr_t base = (uintptr_t)dlinfo.dli_fbase;
+        uintptr_t page_size = sysconf(_SC_PAGESIZE);
+        if (page_size == 0) page_size = 4096;
+
+        /* 1. Hook GOT entry for _ZN12GamepadInput9buttonForEi (resolves LS and RS button issues) */
+        void **got_entry = (void**)(base + 0x97dd968);
+        uintptr_t got_page = ((uintptr_t)got_entry) & ~(page_size - 1);
+        mprotect((void*)got_page, page_size, PROT_READ | PROT_WRITE);
+        *got_entry = (void*)_ZN12GamepadInput9buttonForEi;
+
+        /* 2. Patch padObjects DirectInput names table (Xbox vs PS2 names) */
+        uint32_t *p = (uint32_t*)(base + 0x975d880);
+        if (p[0] == 0xa36d02e0 && p[1] == 0 && p[2] == 0x2) {
+            uintptr_t pad_page = (base + 0x975d880) & ~(page_size - 1);
+            mprotect((void*)pad_page, page_size, PROT_READ | PROT_WRITE);
+            struct RoamPadObject *objs = (struct RoamPadObject*)(base + 0x975d880);
+            const char **names = is_ps2 ? s_ps2_pad_names : s_xbox_pad_names;
+            for (int i = 0; i < 17; i++) {
+                objs[i].name = names[i];
+            }
+        }
+
+        /* 3. Patch device name ("PlayStation 2" vs "Xbox Controller") */
+        char *dev_name = (char*)(base + 0x18511e);
+        uintptr_t dev_name_page = ((uintptr_t)dev_name) & ~(page_size - 1);
+        mprotect((void*)dev_name_page, page_size, PROT_READ | PROT_WRITE);
+        if (is_ps2) {
+            memcpy(dev_name, "PlayStation 2\0", 14);
+        } else {
+            memcpy(dev_name, "Xbox Controller", 16);
+        }
+
+        __android_log_print(ANDROID_LOG_INFO, "NFSU2",
+            "Applied %s gamepad layout (DirectInput padObjects updated, LS/RS buttons bound to _ZN12GamepadInput9buttonForEi)",
+            is_ps2 ? "PS2 Style" : "Xbox Default");
+    }
+}
+
+JNIEXPORT void JNICALL Java_com_nfsu2_androidevolved_GameActivity_nativeGamepadLayout(
+        JNIEnv *env, jclass clazz, jboolean console) {
+    (void)env; (void)clazz;
+    roam_apply_gamepad_layout(console == JNI_TRUE);
+}
+
+JNIEXPORT void JNICALL Java_io_mininxd_nfsu2_GameActivity_nativeGamepadLayout(
+        JNIEnv *env, jclass clazz, jboolean console) {
+    Java_com_nfsu2_androidevolved_GameActivity_nativeGamepadLayout(env, clazz, console);
+}
+
 __attribute__((constructor)) static void powervr_guard_ctor(void) {
     install_powervr_fault_guard();
+    roam_apply_gamepad_layout(0);
 }
 
 JNIEXPORT void JNICALL Java_io_mininxd_nfsu2_GameActivity_nativeGpuDriver(

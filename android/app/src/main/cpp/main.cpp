@@ -24,6 +24,13 @@
 #include "vulkan_driver.h"
 #include "nfs_widescreen.h"
 
+static android_app* s_active_app = nullptr;
+void notifyHaltToHost(const char* message) {
+    if (s_active_app) {
+        showStatus(s_active_app, message);
+    }
+}
+
 static void showStatus(android_app* app, const char* message) {
     JNIEnv* env = nullptr;
     if (app->activity->vm->AttachCurrentThread(&env, nullptr) != JNI_OK) return;
@@ -252,8 +259,9 @@ static bool acceptedGamepad(const AInputEvent* event){
 static void setPadKey(unsigned scan,bool down){setGuestKey(scan,down);}
 static void publishPad(){
     auto state=gamepad.padState();
-    // Z: LT pushes it one way and RT the other, as DirectInput shows an Xbox pad (Z-Axis).
-    const float axes[6]={state.leftX,state.leftY,state.leftTrigger-state.rightTrigger,state.rightX,state.rightY,0.f};
+    // Z: LT pushes it one way and RT the other, as DirectInput shows an Xbox pad.
+    // Rz (axes[5]) provides right trigger independently for custom remapping.
+    const float axes[6]={state.leftX,state.leftY,state.leftTrigger-state.rightTrigger,state.rightX,state.rightY,state.rightTrigger*2.f-1.f};
     setGuestPad(axes,state.buttons,state.hatX,state.hatY);
 }
 static void onCommand(android_app* app, int32_t command) {
@@ -298,6 +306,8 @@ static int32_t onInput(android_app*,AInputEvent* event){
     case AKEYCODE_DEL:scan=0xe;break;
     case AKEYCODE_SHIFT_LEFT:case AKEYCODE_BUTTON_Y:scan=0x2a;break;
     case AKEYCODE_CTRL_LEFT:scan=0x1d;break;case AKEYCODE_TAB:scan=0xf;break;
+    case AKEYCODE_BUTTON_THUMBL:case AKEYCODE_BUTTON_11:case AKEYCODE_BUTTON_13:case AKEYCODE_BUTTON_15:scan=0x31;break;
+    case AKEYCODE_BUTTON_THUMBR:case AKEYCODE_BUTTON_12:case AKEYCODE_BUTTON_14:case AKEYCODE_BUTTON_16:scan=0x2e;break;
     default:{static const unsigned letters[]={0x1e,0x30,0x2e,0x20,0x12,0x21,0x22,0x23,0x17,0x24,0x25,0x26,0x32,0x31,0x18,0x19,0x10,0x13,0x1f,0x14,0x16,0x2f,0x11,0x2d,0x15,0x2c};
         if(key>=AKEYCODE_A&&key<=AKEYCODE_Z)scan=letters[key-AKEYCODE_A];
         else if(key>=AKEYCODE_0&&key<=AKEYCODE_9)scan=key==AKEYCODE_0?0xb:unsigned(key-AKEYCODE_0)+1;
@@ -309,6 +319,12 @@ static int32_t onInput(android_app*,AInputEvent* event){
 }
 extern "C" JNIEXPORT void JNICALL Java_io_mininxd_nfsu2_GameActivity_nativeKey(JNIEnv*,jclass,jint scan,jboolean down){
     setGuestKey(unsigned(scan),down==JNI_TRUE);
+}
+
+// Stable C ABI for the offline Mod Menu in libnfsu2_roam.so.
+extern "C" __attribute__((visibility("default"))) void nfsu2_android_mod_guest_key(unsigned scan, int down){
+    if(scan >= 256u) return;
+    setGuestKey(scan, down != 0);
 }
 extern "C" JNIEXPORT jboolean JNICALL Java_io_mininxd_nfsu2_GameActivity_nativeDrivingControls(JNIEnv*,jclass){return guestDrivingControls()?JNI_TRUE:JNI_FALSE;}
 extern "C" JNIEXPORT void JNICALL Java_io_mininxd_nfsu2_GameActivity_nativePointer(JNIEnv*,jclass,jfloat x,jfloat y,jint phase){
@@ -417,6 +433,7 @@ static void configurePipelineCache(android_app* app){
     __android_log_print(ANDROID_LOG_INFO,"NFSU2","DXVK persistent pipeline state cache: %s",directory.c_str());
 }
 void android_main(android_app* app) {
+    s_active_app = app;
     configurePipelineCache(app);
     Host host; app->userData = &host; app->onAppCmd = onCommand;app->onInputEvent=onInput;
     try {

@@ -35,6 +35,8 @@
 ## Features
 
 - **⚡ Static Binary Recompilation**: Recompiles 27,742 x86 functions into standard C99 code. Executes directly on target hardware without dynamic binary translation, JIT compilation, or hypervisor emulation overhead.
+- **🚗 Unlocked Regional Cars**: Unlocks and integrates European-exclusive cars (**Peugeot 106** and **Opel Corsa**) directly on NTSC game files, available in Career car lot, Quick Race car selection, and AI opponent rosters.
+- **🛠️ Gameplay & Engine Fixes**: Built-in 3D ground shadow alignment fix, damaged glass fix, high-framerate pacing adjustments, and dedicated hydraulic bounce/lift control buttons.
 - **🌋 DXVK Native Vulkan Acceleration**: Translates Direct3D 9 calls to Vulkan via an embedded DXVK Native runtime, featuring widescreen rendering, texture caching, and low-overhead frame pacing.
 - **🌐 Native Free Roam Multiplayer**: Built-in C companion (`libnfsu2_roam.so`) connecting directly to Prometheus Adhoc infrastructure (`adhoc.eahub.eu`). Synchronizes online player cars, 3D body kits, positions, and minimap markers in Bayview free roam with zero port forwarding.
 - **🎮 Input Flexibility & Dynamic Mapping**:
@@ -157,6 +159,12 @@ The pipeline lifts disassembled 32-bit x86 instructions into platform-independen
 | **Controller / Joypad** | Android | **Complete** | DirectInput pad device enumeration, normalized Z-Axis triggers, button labels. |
 | **Thread Pinning (EAS)** | Android | **Complete** | Automatic binding of worker threads to Big/Prime CPU cores. |
 
+### Win32 & DirectX Library Translation Coverage
+
+![NFSU2 Library Progress](library-progress.svg)
+
+The translation surface tracks all Win32 and DirectX 9 functions imported by `SPEED2.EXE` and required by the Android native runtime. Progress can be viewed, updated, and regenerated using `scripts/library_progress.py`.
+
 ---
 
 ## Tested Game Executable
@@ -253,6 +261,7 @@ This project is **NFSU2 Revived**. Full credit and attribution to the pioneering
 - **[sp00nznet/pcrecomp](https://github.com/sp00nznet/pcrecomp)** — Underlying static binary recompilation engine and x86 lifter framework.
 - **[doitsujin/dxvk](https://github.com/doitsujin/dxvk)** — Vulkan-based Direct3D 9 translation layer.
 - **[ThirteenAG/WidescreenFixesPack](https://github.com/ThirteenAG/WidescreenFixesPack)** — Widescreen display enhancements and aspect ratio scaling.
+- **[ExOptsTeam/NFSU2ExOpts](https://github.com/ExOptsTeam/NFSU2ExOpts)** — Reference research for regional car unlocks.
 - **[th0mk/nfsu2-web](https://github.com/th0mk/nfsu2-web)** — Reference web implementation and touch controls layout.
 
 ---
