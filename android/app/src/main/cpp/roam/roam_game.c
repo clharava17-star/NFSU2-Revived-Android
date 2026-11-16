@@ -3510,6 +3510,52 @@ static int wm_step(int64_t host){
     }
     return g_wm_n > 0;
 }
+#if defined(ROAM_HOST_ANDROID)
+/* The companion frame hook also runs in Career, but the original map_update
+ * belongs to Free Roam (it requires the paused multiplayer sync clock).  The
+ * Career world map needs only the package, its legend, and the hidden-race
+ * markers, so keep that path independent of Free Roam state. */
+static uint32_t g_hidden_career_map;
+static void hidden_map_career_update(CPU *c, uint32_t w){
+    if (!w || rd32(G_FLOW) != 6u || !player_car()){
+        if (g_hidden_career_map){
+            g_hidden_career_map = 0;
+            g_hidden_map.map = 0;
+            g_wmf.map = 0;
+        }
+        return;
+    }
+    if (!g_gmem) gmem_init(c);
+    if (!g_gmem) return;
+
+    uint32_t sa = g_gmem + TAG_SCR + 0x48u;
+    gstr(sa, WM_PACKAGE, 24);
+    uint32_t pk = gcall1(c, FN_FE_PACKAGE, 0, sa);
+    if (!ok(pk, 0x54)) goto map_closed;
+
+    uint32_t scr = wm_screen(pk), map = scr ? rd32(scr + WM_MAP) : 0;
+    uint32_t pkg = scr ? rd32(scr + 4u) : 0;
+    if (!ok(map, 0x2c) || !ok(pkg, 24)) goto map_closed;
+
+    if (g_hidden_career_map != map){
+        g_hidden_career_map = map;
+        wmf_begin(map);
+        wmf_open(c, scr, map, pkg, w);
+        gcall0(c, FN_WM_PLACE, map);
+    }
+    wmf_frame(c, map);
+    if (hidden_map_open(c, map, pkg, pk)) gcall0(c, FN_WM_PLACE, map);
+    return;
+
+map_closed:
+    if (g_hidden_career_map){
+        g_hidden_career_map = 0;
+        g_hidden_map.map = 0;
+        g_wmf.map = 0;
+    }
+}
+#endif
+
 static void map_update(CPU *c, uint32_t w, int64_t host){
     if (!g_sync_paused || !g_gmem){ g_wm.done = 0;
 #if defined(ROAM_HOST_ANDROID)
@@ -8317,6 +8363,9 @@ void roam_game_frame(CPU *c){
         if (w) park_all(c);
         g_pass.stay_since = g_pass.blocking = 0;
         near_update(c, w, host, 0);
+#if defined(ROAM_HOST_ANDROID)
+        hidden_map_career_update(c, w);
+#endif
     } else {
         /* the outrun challengers' manager first: whether opponent cars are
          * free this frame depends on it (LEND_OPP) */
