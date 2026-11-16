@@ -3562,9 +3562,12 @@ static void hidden_map_career_update(CPU *c, uint32_t w){
             static uint32_t last_map;
             static unsigned tries;
             if (last_map != map){ last_map = map; tries = 0; }
-            if ((++tries % 120u) == 1u)
-                rlog("[roam] hidden map Career: waiting for legend rows (map 0x%08x, base rows %u, custom %u/%u)\\n",
-                     map, rd32(scr + WMF_SCR_ROWS), (unsigned)0, (unsigned)WMF_N);
+            if ((++tries % 120u) == 1u){
+                int ready = 0;
+                for (int i = 0; i < WMF_N; i++) ready += g_wmf.row[i] != 0;
+                rlog("[roam] hidden map Career: waiting for legend rows (map 0x%08x, custom rows %d/%d)\\n",
+                     map, ready, WMF_N);
+            }
             return;
         }
         g_hidden_career_map = map;
