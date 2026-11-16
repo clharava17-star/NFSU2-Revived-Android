@@ -2983,43 +2983,61 @@ static void ai_map_open(CPU *c, uint32_t map, uint32_t pkg, uint32_t w){
 #define WMF_ROW_SZ      0x2cu
 #define WMF_SCR_ROWS    0x54u         /* the screen: its legend (+0 the first row, +4 the last) */
 #define WMF_SCR_BUTTONS 0x50u         /* the screen: its buttons' list (+4 first, +8 last; 0x14 bytes: +8 1 a row's, +0xC ICON_BACKING_<n>, +0x10 the row) */
-#define WMF_KIND0       0x20u         /* our rows' kinds: Players, Players' races (the game's are 0 .. 13) */
+#define WMF_KIND0       0x20u         /* our rows' kinds (the game's are 0 .. 13) */
 #define FN_WM_ROWLOOK   0x00496920u   /* thiscall row (crossed): the tick or the cross, the icon and the text dimmed or not */
 #define FN_FE_TEX       0x0050c980u   /* cdecl (image) -> its texture's hash */
 #define FN_FE_SETTEX    0x0050c990u   /* cdecl (image, texture hash) */
-#define WMF_RACES_RGB   0xffc832u     /* Players' races' icon: the lobbies' labels' gold (MP_RGB_LOBBY) */
+#define WMF_RACES_RGB   0xffc832u     /* the hidden-race star and legend rows' gold */
 #define MEET_RGB        0x78ff50u     /* car meets' labels, icons and legend row (meet_*) */
 #define WMF_AWAY        1.0e5f        /* a hidden marker's place: off every map */
-#define WMF_MAX         (NSLOT + RC_MAP_MAX + 32)
+#define WMF_MAX         (NSLOT + RC_MAP_MAX + 80)
 #define WMF_PLAYERS     0
-#define WMF_RACES       1
+#if defined(ROAM_HOST_ANDROID)
+#define WMF_RACES       6             /* multiplayer lobby race markers */
+#define WMF_MEETS       7             /* car meets (meet_*) */
+#define WMF_N           8             /* Players, five hidden-race stages, lobby races, and car meets */
+#else
+#define WMF_RACES       1             /* multiplayer lobby race markers */
 #define WMF_MEETS       2             /* car meets (meet_*) */
 #if MPRACES
 #define WMF_N           3
 #else
 #define WMF_N           1
 #endif
+#endif
 #ifndef ROAM_HOST_WIN
 int  win32_reg_get_dword(const char *nm, uint32_t *out);
 void win32_reg_put_dword(const char *nm, uint32_t v);
-static const char *const wmf_reg[3] = { "MapPlayers", "MapRaces", "MapMeets" };   /* (the Windows plugin keeps them a session) */
+#if defined(ROAM_HOST_ANDROID)
+static const char *const wmf_reg[WMF_N] = { "MapPlayers", "MapHiddenStage1", "MapHiddenStage2", "MapHiddenStage3", "MapHiddenStage4", "MapHiddenStage5", "MapRaces", "MapMeets" };
+#else
+static const char *const wmf_reg[WMF_N] = { "MapPlayers", "MapRaces", "MapMeets" };   /* (the Windows plugin keeps them a session) */
 #endif
-#define WMF_TEST0       3             /* rows of no kind for a test (NFSU2_ROAM_TEST_LEGEND_ROWS): a fuller legend */
+#endif
+#define WMF_TEST0       WMF_N          /* rows of no kind for a test (NFSU2_ROAM_TEST_LEGEND_ROWS): a fuller legend */
 #define WMF_TEST_MAX    4
+#if defined(ROAM_HOST_ANDROID)
+static const char *const wmf_text[WMF_TEST0 + WMF_TEST_MAX] = {
+    "Players", "Hidden Race Stage 1", "Hidden Race Stage 2", "Hidden Race Stage 3", "Hidden Race Stage 4", "Hidden Race Stage 5",
+    "Players' races", "Car meets", "Test row 1", "Test row 2", "Test row 3", "Test row 4"
+};
+#else
 static const char *const wmf_text[WMF_TEST0 + WMF_TEST_MAX] = { "Players", "Players' races", "Car meets", "Test row 1", "Test row 2", "Test row 3",
                                                                 "Test row 4" };
-static int g_wmf_on[WMF_TEST0 + WMF_TEST_MAX] = { 1, 1, 1, 1, 1, 1, 1 }, g_wmf_loaded;
-static struct { uint32_t map, row[3]; int n; uint32_t m[WMF_MAX]; float x[WMF_MAX], y[WMF_MAX]; uint8_t what[WMF_MAX]; } g_wmf;
+#endif
+static int g_wmf_on[WMF_TEST0 + WMF_TEST_MAX], g_wmf_loaded;
+static struct { uint32_t map, row[WMF_N]; int n; uint32_t m[WMF_MAX]; float x[WMF_MAX], y[WMF_MAX]; uint8_t what[WMF_MAX]; } g_wmf;
 static void wmf_load(void){
     if (g_wmf_loaded) return;
     g_wmf_loaded = 1;
+    for (int i = 0; i < WMF_TEST0 + WMF_TEST_MAX; i++) g_wmf_on[i] = 1;
 #ifndef ROAM_HOST_WIN
     for (int i = 0; i < WMF_N; i++){ uint32_t v; if (win32_reg_get_dword(wmf_reg[i], &v)) g_wmf_on[i] = v != 0; }
 #endif
 }
 /* marker m of the open map is a player's (what WMF_PLAYERS), a lobby's
- * (WMF_RACES) or a meet's (WMF_MEETS): off the map while its row is crossed
- * (placed again by the caller); its entry, -1 when it has none */
+ * (WMF_RACES), a hidden-race Stage (1..5), or a meet's (WMF_MEETS): off
+ * the map while its row is crossed (placed again by the caller); its entry */
 static int wmf_track(uint32_t map, uint32_t m, int what){
     if (g_wmf.map != map || g_wmf.n >= WMF_MAX || !ok(m, WM_MARK_SZ)) return -1;
     int i = g_wmf.n++;
@@ -3027,6 +3045,124 @@ static int wmf_track(uint32_t map, uint32_t m, int what){
     if (!g_wmf_on[what]){ MRF32(m + 0x10u) = WMF_AWAY; MRF32(m + 0x14u) = WMF_AWAY; }
     return i;
 }
+#if defined(ROAM_HOST_ANDROID)
+#define HIDDEN_MAP_MAX      64
+#define HIDDEN_MAP_STAGE_N  5
+#define HIDDEN_MAP_STAR     "SHOWCASEINDICATOR_"
+#define HIDDEN_MAP_GOLD     0xffc832u
+#define HIDDEN_MAP_EVENT    1u
+#define HIDDEN_MAP_RETRIES  120
+extern uint32_t nfsu2_hidden_race_count(void);
+extern int nfsu2_hidden_race_info(uint32_t index, uint32_t *stage, uint32_t *marker_hash);
+static struct {
+    uint32_t map;
+    int n, tries, complete;
+    uint32_t marker[HIDDEN_MAP_MAX];
+    uint8_t stage[HIDDEN_MAP_MAX];
+} g_hidden_map;
+
+static uint32_t hidden_map_star(CPU *c, uint32_t pkg){
+    char nm[32];
+    for (int i = 0; i < 3; i++){
+        snprintf(nm, sizeof nm, "%s%d", HIDDEN_MAP_STAR, i);
+        uint32_t o = wm_find(c, pkg, nm);
+        if (o) return o;
+    }
+    return 0;
+}
+static int hidden_map_xy(uint32_t marker_hash, float *x, float *y){
+    uint32_t e = rd32(G_TRIGGERS + 0x440u + 4u * TRIG_EVENT);
+    uint32_t end = rd32(G_TRIGGERS + 0x444u + 4u * TRIG_EVENT);
+    for (int n = 0; e < end && n < 1024 && ok(e, 0x44); n++){
+        if (MR32(e + 0x30u) == marker_hash){
+            *x = (MRF32(e + 0x20u) + MRF32(e + 0x28u)) * 0.5f;
+            *y = (MRF32(e + 0x24u) + MRF32(e + 0x2cu)) * 0.5f;
+            return 1;
+        }
+        int sz = (int16_t)MR16(e + 0x42u);
+        if (sz <= 0) break;
+        e += (uint32_t)sz;
+    }
+    return 0;
+}
+static uint32_t hidden_map_existing(uint32_t map, uint32_t obj){
+    for (uint32_t e = rd32(map + 4u), n = 0; e && e != map + 4u && n < FE_WALK && ok(e, WM_MARK_SZ); e = rd32(e), n++)
+        if (MR32(e + 8u) == WM_CAR && MR32(e + 0xcu) == obj) return e;
+    return 0;
+}
+static int hidden_map_open(CPU *c, uint32_t map, uint32_t pkg, uint32_t pk){
+    if (g_hidden_map.map != map){
+        memset(&g_hidden_map, 0, sizeof g_hidden_map);
+        g_hidden_map.map = map;
+    }
+    if (g_hidden_map.complete) return 0;
+    if (g_hidden_map.tries < HIDDEN_MAP_RETRIES) g_hidden_map.tries++;
+
+    uint32_t count = nfsu2_hidden_race_count();
+    uint32_t star = count ? hidden_map_star(c, pkg) : 0;
+    if (!star || !count){
+        if (g_hidden_map.tries >= HIDDEN_MAP_RETRIES){
+            g_hidden_map.complete = 1;
+            rlog("[roam] f=%ld hidden map: no star icon or no hidden-race records (%u)\n", rh_frame(), count);
+        }
+        return 0;
+    }
+
+    int pending = 0, made = 0;
+    g_fcl.on = 1; g_fcl.l = 0;
+    for (uint32_t i = 0; i < count && g_hidden_map.n < HIDDEN_MAP_MAX; i++){
+        uint32_t stage = 0, marker_hash = 0;
+        if (!nfsu2_hidden_race_info(i, &stage, &marker_hash) || stage < 1u || stage > HIDDEN_MAP_STAGE_N || !marker_hash) continue;
+        int duplicate = 0;
+        for (int j = 0; j < g_hidden_map.n; j++)
+            if (g_hidden_map.stage[j] == stage && g_hidden_map.marker[j] == marker_hash){ duplicate = 1; break; }
+        if (duplicate) continue;
+
+        float x = 0.f, y = 0.f;
+        if (!hidden_map_xy(marker_hash, &x, &y)){ pending = 1; continue; }
+        if (wm_room(pk) < 1){ pending = 1; break; }
+
+        char name[24]; snprintf(name, sizeof name, "ROAM_HR_%02u", i + 1u);
+        uint32_t obj = wm_find(c, pkg, name);
+        if (!obj) obj = fe_clone(c, pkg, star, name);
+        if (!obj){ pending = 1; continue; }
+        fe_colour_to(c, obj, (const int32_t[3]){ HIDDEN_MAP_GOLD & 0xffu, (HIDDEN_MAP_GOLD >> 8) & 0xffu, (HIDDEN_MAP_GOLD >> 16) & 0xffu });
+
+        uint32_t m = hidden_map_existing(map, obj);
+        if (!m){
+            uint32_t sz = WM_MARK_SZ;
+            m = rh_call(c, FN_MALLOC, 0, 0, 1, &sz);
+            if (!ok(m, WM_MARK_SZ)){ pending = 1; continue; }
+            for (uint32_t b = 0; b < WM_MARK_SZ; b += 4u) MR32(m + b) = 0;
+            MR32(m + 8u) = WM_CAR;
+            MR32(m + 0xcu) = obj;
+            MRF32(m + 0x10u) = x;
+            MRF32(m + 0x14u) = y;
+            MR8(m + 0x28u) = HIDDEN_MAP_EVENT;
+            uint32_t head = map + 4u, tail = rd32(head + 4u);
+            MR32(tail) = m; MR32(head + 4u) = m; MR32(m + 4u) = tail; MR32(m) = head;
+        }
+        MRF32(m + 0x10u) = x; MRF32(m + 0x14u) = y;
+        if (wmf_track(map, m, (int)stage) < 0){ pending = 1; continue; }
+        made++;
+        g_hidden_map.marker[g_hidden_map.n] = marker_hash;
+        g_hidden_map.stage[g_hidden_map.n] = (uint8_t)stage;
+        g_hidden_map.n++;
+    }
+    g_fcl.on = 0;
+
+    if (!pending || g_hidden_map.tries >= HIDDEN_MAP_RETRIES){
+        g_hidden_map.complete = 1;
+        int stage_count[HIDDEN_MAP_STAGE_N + 1] = {0};
+        for (int i = 0; i < g_hidden_map.n; i++)
+            if (g_hidden_map.stage[i] <= HIDDEN_MAP_STAGE_N) stage_count[g_hidden_map.stage[i]]++;
+        rlog("[roam] f=%ld hidden map: %d star markers; Stage 1=%d, 2=%d, 3=%d, 4=%d, 5=%d\n",
+             rh_frame(), g_hidden_map.n, stage_count[1], stage_count[2], stage_count[3], stage_count[4], stage_count[5]);
+    }
+    if (made) gcall0(c, FN_WM_PLACE, map);
+    return made;
+}
+#endif
 /* marker m (its entry i, -1: none) to x, y (WMF_AWAY: off the map, whatever
  * the row), heading h (a car's, 65536 a turn); placed again by the caller */
 static void wmf_move(uint32_t m, int i, float x, float y, uint16_t h){
@@ -3192,18 +3328,26 @@ static void wmf_open(CPU *c, uint32_t scr, uint32_t map, uint32_t pkg, uint32_t 
     int test = env_int("NFSU2_ROAM_TEST_LEGEND_ROWS", 0, 0, WMF_TEST_MAX), nl = rows;
     float k = 1.f;
     if (like){
-        uint32_t car = wm_find(c, pkg, "AIRACERINDICATOR_0"), ring = wm_find(c, pkg, "SPRINTEVENTINDICATOR_0");
+        uint32_t car = wm_find(c, pkg, "AIRACERINDICATOR_0");
         uint32_t rgb = g_wm.col_ok ? (uint32_t)(g_wm.col[2] & 0xff) << 16 | (uint32_t)(g_wm.col[1] & 0xff) << 8 | (uint32_t)(g_wm.col[0] & 0xff) : 0xffffffu;
-        uint32_t tex[3] = { car ? gcall1(c, FN_FE_TEX, 0, car) : 0, ring ? gcall1(c, FN_FE_TEX, 0, ring) : 0, 0 }, col[3] = { rgb, WMF_RACES_RGB, MEET_RGB };
+        uint32_t tex[WMF_N] = {0}, col[WMF_N] = {0};
+        tex[WMF_PLAYERS] = car ? gcall1(c, FN_FE_TEX, 0, car) : 0; col[WMF_PLAYERS] = rgb;
+#if defined(ROAM_HOST_ANDROID)
+        uint32_t star = wm_find(c, pkg, "SHOWCASEINDICATOR_0");
+        uint32_t star_tex = star ? gcall1(c, FN_FE_TEX, 0, star) : 0;
+        for (int i = 1; i <= HIDDEN_MAP_STAGE_N; i++){ tex[i] = star_tex; col[i] = WMF_RACES_RGB; }
+#endif
 #if MPRACES
+        uint32_t ring = wm_find(c, pkg, "SPRINTEVENTINDICATOR_0");
+        tex[WMF_RACES] = ring ? gcall1(c, FN_FE_TEX, 0, ring) : tex[WMF_PLAYERS]; col[WMF_RACES] = WMF_RACES_RGB;
         uint32_t mi = meet_icon(c, pkg);
-        tex[2] = mi ? gcall1(c, FN_FE_TEX, 0, mi) : tex[0];
+        tex[WMF_MEETS] = mi ? gcall1(c, FN_FE_TEX, 0, mi) : tex[WMF_PLAYERS]; col[WMF_MEETS] = MEET_RGB;
 #endif
         for (int i = 0; i < WMF_N + test; i++){
             int what = i < WMF_N ? i : WMF_TEST0 + i - WMF_N, slot = rows + 1 + i;
             uint32_t o[4], bk = 0;
             int got = slot <= WMF_ROWS ? wmf_parts(c, pkg, slot, o, &bk) : wmf_copy_parts(c, pkg, i, o, &bk);
-            uint32_t r = got ? wmf_row(c, scr, pkg, o, bk, what, like, what < 3 ? tex[what] : tex[0], what < 3 ? col[what] : 0xffffffu) : 0;
+            uint32_t r = got ? wmf_row(c, scr, pkg, o, bk, what, like, what < WMF_N ? tex[what] : tex[0], what < WMF_N ? col[what] : 0xffffffu) : 0;
             if (i < WMF_N) g_wmf.row[i] = r;
             if (r) line[nl++] = r;
         }
@@ -3226,9 +3370,10 @@ static void wmf_open(CPU *c, uint32_t scr, uint32_t map, uint32_t pkg, uint32_t 
             break;
         }
     }
-    rlog("[roam] f=%ld world map: legend rows %d of the game's%s%s%s, %d in all, at %.2f of their size; players %s, races %s, meets %s\n", rh_frame(), rows,
-         g_wmf.row[0] ? " and Players" : "", g_wmf.row[1] ? " and Players' races" : "", g_wmf.row[2] ? " and Car meets" : "", nl, (double)k,
-         g_wmf_on[0] ? "shown" : "hidden", g_wmf_on[1] ? "shown" : "hidden", g_wmf_on[2] ? "shown" : "hidden");
+    rlog("[roam] f=%ld world map: legend rows %d of the game's, %d in all, at %.2f of their size\n", rh_frame(), rows, nl, (double)k);
+    for (int i = 0; i < WMF_N; i++)
+        rlog("[roam]   map filter %s: %s\n", wmf_text[i], g_wmf_on[i] ? "shown" : "hidden");
+
 }
 /* every frame the map is open: a row ticked or crossed since, its markers on or off the map */
 static void wmf_frame(CPU *c, uint32_t map){
@@ -3366,13 +3511,28 @@ static int wm_step(int64_t host){
     return g_wm_n > 0;
 }
 static void map_update(CPU *c, uint32_t w, int64_t host){
-    if (!g_sync_paused || !g_gmem){ g_wm.done = 0; return; }        /* the world stands while the map is open */
+    if (!g_sync_paused || !g_gmem){ g_wm.done = 0;
+#if defined(ROAM_HOST_ANDROID)
+        g_hidden_map.map = 0;
+#endif
+        return;
+    }        /* the world stands while the map is open */
     uint32_t sa = g_gmem + TAG_SCR + 0x48u;
     gstr(sa, WM_PACKAGE, 24);
     uint32_t pk = gcall1(c, FN_FE_PACKAGE, 0, sa);
-    if (!ok(pk, 0x54)){ g_wm.done = 0; return; }
+    if (!ok(pk, 0x54)){ g_wm.done = 0;
+#if defined(ROAM_HOST_ANDROID)
+        g_hidden_map.map = 0;
+#endif
+        return;
+    }
     uint32_t scr = wm_screen(pk), map = scr ? rd32(scr + WM_MAP) : 0, pkg = scr ? rd32(scr + 4u) : 0;
-    if (!ok(map, 0x2c) || !ok(pkg, 24)){ g_wm.done = 0; return; }
+    if (!ok(map, 0x2c) || !ok(pkg, 24)){ g_wm.done = 0;
+#if defined(ROAM_HOST_ANDROID)
+        g_hidden_map.map = 0;
+#endif
+        return;
+    }
     if (g_wm.done && map != g_wm.map) g_wm.done = 0;                    /* another map (opened again) */
     if (!g_wm.done){
         g_wm.done = 1; g_wm.map = map; g_wm.copies = 0; g_wm.asks = 0; g_wm.others = 0; g_wm.lobbies = 0;
@@ -3402,6 +3562,9 @@ static void map_update(CPU *c, uint32_t w, int64_t host){
         roam_plat_lock(); g_wm.gen = g_s.map_gen; roam_plat_unlock();
     }
     wmf_frame(c, map);
+#if defined(ROAM_HOST_ANDROID)
+    hidden_map_open(c, map, pkg, pk);
+#endif
 #if MPRACES
     meet_map_labels(c, map);                                            /* (before the lobbies': they keep off these) */
     mp_map_labels(c, map);
@@ -8727,14 +8890,20 @@ int roam_game_cmd(CPU *c, const char *args, long *wait_start){
         if (!strcasecmp(a1, "parts")) fe_parts(pk + 0x4cu, 0, -60.f);
         /* the legend's rows (ours with their ticks) and the markers they hide */
         if (g_wmf.map == map){
-            int rows = 0, tracked[3] = { 0, 0, 0 }, away = 0;
+            int rows = 0, tracked[WMF_N] = { 0 }, away = 0;
             for (uint32_t r = rd32(scr + WMF_SCR_ROWS); r && r != scr + WMF_SCR_ROWS && rows < 64 && ok(r, WMF_ROW_SZ); r = rd32(r)) rows++;
-            for (int i = 0; i < g_wmf.n; i++){ tracked[g_wmf.what[i] < 3 ? g_wmf.what[i] : 0]++; away += MRF32(g_wmf.m[i] + 0x10u) == WMF_AWAY; }
-            rlog("[roam] f=%ld mp map: legend %d rows, the picked one kind %d; Players %s, Players' races %s, Car meets %s; %d players' markers, %d lobbies', "
-                 "%d meets', %d of them off the map\n",
-                 f, rows, ok(rd32(scr + 0x5cu), WMF_ROW_SZ) ? (int)MR32(rd32(scr + 0x5cu) + 0x20u) : -1,
-                 g_wmf.row[0] ? (MR8(g_wmf.row[0] + 0x24u) ? "crossed" : "ticked") : "-", g_wmf.row[1] ? (MR8(g_wmf.row[1] + 0x24u) ? "crossed" : "ticked") : "-",
-                 g_wmf.row[2] ? (MR8(g_wmf.row[2] + 0x24u) ? "crossed" : "ticked") : "-", tracked[0], tracked[1], tracked[2], away);
+            for (int i = 0; i < g_wmf.n; i++){
+                int what = g_wmf.what[i];
+                if (what >= 0 && what < WMF_N) tracked[what]++;
+                away += MRF32(g_wmf.m[i] + 0x10u) == WMF_AWAY;
+            }
+            rlog("[roam] f=%ld mp map: legend %d rows, picked kind %d; %d tracked markers (%d off-map)\n",
+                 f, rows, ok(rd32(scr + 0x5cu), WMF_ROW_SZ) ? (int)MR32(rd32(scr + 0x5cu) + 0x20u) : -1, g_wmf.n, away);
+            for (int i = 0; i < WMF_N; i++){
+                const char *state = g_wmf.row[i] ? (MR8(g_wmf.row[i] + 0x24u) ? "crossed" : "ticked") : "-";
+                rlog("[roam]   map filter %s: %s, %d markers\n", wmf_text[i], state, tracked[i]);
+            }
+
         }
 #if MPRACES
         for (int i = 0; i < g_wml.n && g_wml.map == map; i++){
