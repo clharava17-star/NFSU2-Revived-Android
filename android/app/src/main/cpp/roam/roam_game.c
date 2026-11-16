@@ -3316,6 +3316,9 @@ static void wmf_open(CPU *c, uint32_t scr, uint32_t map, uint32_t pkg, uint32_t 
     int rows = 0; uint32_t like = 0, line[64 + WMF_TEST0 + WMF_TEST_MAX]; float yl[64];
     /* the game's rows, top to bottom (by their ticks' places) */
     for (uint32_t r = rd32(scr + WMF_SCR_ROWS); r && r != scr + WMF_SCR_ROWS && rows < 64 && ok(r, WMF_ROW_SZ); r = rd32(r)){
+        int ours = 0;
+        for (int q = 0; q < WMF_N; q++) if (g_wmf.row[q] == r){ ours = 1; break; }
+        if (ours) continue; /* a partially built Career legend: do not count our rows as the game's */
         uint32_t t = MR32(r + 8u), d = ok(t, 0x34) ? rd32(t + 0x2cu) : 0;
         float y = ok(d, 0x40) ? MRF32(d + 0x20u) : 0.f;
         int j = rows++;
@@ -3345,10 +3348,13 @@ static void wmf_open(CPU *c, uint32_t scr, uint32_t map, uint32_t pkg, uint32_t 
 #endif
         for (int i = 0; i < WMF_N + test; i++){
             int what = i < WMF_N ? i : WMF_TEST0 + i - WMF_N, slot = rows + 1 + i;
-            uint32_t o[4], bk = 0;
-            int got = slot <= WMF_ROWS ? wmf_parts(c, pkg, slot, o, &bk) : wmf_copy_parts(c, pkg, i, o, &bk);
-            uint32_t r = got ? wmf_row(c, scr, pkg, o, bk, what, like, what < WMF_N ? tex[what] : tex[0], what < WMF_N ? col[what] : 0xffffffu) : 0;
-            if (i < WMF_N) g_wmf.row[i] = r;
+            uint32_t o[4], bk = 0, r = i < WMF_N ? g_wmf.row[i] : 0;
+            if (!r){
+                int got = slot < WMF_ROWS ? wmf_parts(c, pkg, slot, o, &bk) : 0;
+                if (!got || !bk) got = wmf_copy_parts(c, pkg, i, o, &bk);
+                r = got && bk ? wmf_row(c, scr, pkg, o, bk, what, like, what < WMF_N ? tex[what] : tex[0], what < WMF_N ? col[what] : 0xffffffu) : 0;
+                if (i < WMF_N) g_wmf.row[i] = r;
+            }
             if (r) line[nl++] = r;
         }
         k = wmf_fit(c, scr, pkg, line, nl);
@@ -3516,6 +3522,10 @@ static int wm_step(int64_t host){
  * Career world map needs only the package, its legend, and the hidden-race
  * markers, so keep that path independent of Free Roam state. */
 static uint32_t g_hidden_career_map;
+static int hidden_map_legend_ready(void){
+    for (int i = 0; i < WMF_N; i++) if (!g_wmf.row[i]) return 0;
+    return 1;
+}
 static void hidden_map_career_update(CPU *c, uint32_t w){
     if (!w || !player_car()){
         if (g_hidden_career_map){
@@ -3526,7 +3536,11 @@ static void hidden_map_career_update(CPU *c, uint32_t w){
         return;
     }
     if (!g_gmem) gmem_init(c);
-    if (!g_gmem) return;
+    if (!g_gmem){
+        static int no_mem_logged;
+        if (!no_mem_logged++){ rlog("[roam] hidden map Career: guest scratch allocation failed\\n"); }
+        return;
+    }
 
     uint32_t sa = g_gmem + TAG_SCR + 0x48u;
     gstr(sa, WM_PACKAGE, 24);
@@ -3537,12 +3551,24 @@ static void hidden_map_career_update(CPU *c, uint32_t w){
     uint32_t pkg = scr ? rd32(scr + 4u) : 0;
     if (!ok(map, 0x2c) || !ok(pkg, 24)) goto map_closed;
 
-    /* map_update has already installed the shared legend and markers */
-    if (g_wm.done && g_wm.map == map){ g_hidden_career_map = map; return; }
+    /* A Career map may be visible one frame before its legend's package rows
+     * have been populated. Retry until every custom row has a backing button.
+     * wmf_open is idempotent for rows already installed on this map. */
+    if (g_wmf.map != map) wmf_begin(map);
+    if (g_wmf.done && g_wmf.map == map){ g_hidden_career_map = map; return; }
     if (g_hidden_career_map != map){
-        g_hidden_career_map = map;
-        wmf_begin(map);
         wmf_open(c, scr, map, pkg, w);
+        if (!hidden_map_legend_ready()){
+            static uint32_t last_map;
+            static unsigned tries;
+            if (last_map != map){ last_map = map; tries = 0; }
+            if ((++tries % 120u) == 1u)
+                rlog("[roam] hidden map Career: waiting for legend rows (map 0x%08x, base rows %u, custom %u/%u)\\n",
+                     map, rd32(scr + WMF_SCR_ROWS), (unsigned)0, (unsigned)WMF_N);
+            return;
+        }
+        g_hidden_career_map = map;
+        rlog("[roam] hidden map Career: custom legend rows installed on map 0x%08x\\n", map);
         gcall0(c, FN_WM_PLACE, map);
     }
     wmf_frame(c, map);
