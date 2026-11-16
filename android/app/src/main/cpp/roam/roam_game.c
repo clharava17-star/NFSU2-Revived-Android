@@ -3527,6 +3527,8 @@ static int hidden_map_legend_ready(void){
     return 1;
 }
 static void hidden_map_career_update(CPU *c, uint32_t w){
+    static int diag_state = 0;
+    if (!diag_state){ rlog("[roam] hidden map Career hook reached\\n"); diag_state = 1; }
     if (!w || !player_car()){
         if (g_hidden_career_map){
             g_hidden_career_map = 0;
@@ -3545,11 +3547,22 @@ static void hidden_map_career_update(CPU *c, uint32_t w){
     uint32_t sa = g_gmem + TAG_SCR + 0x48u;
     gstr(sa, WM_PACKAGE, 24);
     uint32_t pk = gcall1(c, FN_FE_PACKAGE, 0, sa);
-    if (!ok(pk, 0x54)) goto map_closed;
+    if (!ok(pk, 0x54)){
+        if (diag_state != 2){ rlog("[roam] hidden map Career: FE package lookup unavailable\\n"); diag_state = 2; }
+        goto map_closed;
+    }
 
-    uint32_t scr = wm_screen(pk), map = scr ? rd32(scr + WM_MAP) : 0;
-    uint32_t pkg = scr ? rd32(scr + 4u) : 0;
-    if (!ok(map, 0x2c) || !ok(pkg, 24)) goto map_closed;
+    uint32_t scr = wm_screen(pk);
+    if (!scr){
+        if (diag_state != 3){ rlog("[roam] hidden map Career: package found but WorldMap screen vtable did not match (package 0x%08x)\\n", pk); diag_state = 3; }
+        goto map_closed;
+    }
+    uint32_t map = rd32(scr + WM_MAP), pkg = rd32(scr + 4u);
+    if (!ok(map, 0x2c) || !ok(pkg, 24)){
+        if (diag_state != 4){ rlog("[roam] hidden map Career: screen has no valid map/package (screen 0x%08x map 0x%08x pkg 0x%08x)\\n", scr, map, pkg); diag_state = 4; }
+        goto map_closed;
+    }
+    if (diag_state != 5){ rlog("[roam] hidden map Career: WorldMap screen detected (map 0x%08x)\\n", map); diag_state = 5; }
 
     /* A Career map may be visible one frame before its legend's package rows
      * have been populated. Retry until every custom row has a backing button.
