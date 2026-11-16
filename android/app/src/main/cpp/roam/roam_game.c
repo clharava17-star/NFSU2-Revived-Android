@@ -3312,6 +3312,9 @@ static void wmf_begin(uint32_t map){
     wmf_load();
     memset(&g_wmf, 0, sizeof g_wmf); g_wmf.map = map;
 }
+#if defined(ROAM_HOST_ANDROID)
+static int hidden_map_legend_ready(void);
+#endif
 static void wmf_open(CPU *c, uint32_t scr, uint32_t map, uint32_t pkg, uint32_t w){
     static uint32_t diag_map;
     static unsigned diag_calls;
