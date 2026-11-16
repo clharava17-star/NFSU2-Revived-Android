@@ -3517,7 +3517,7 @@ static int wm_step(int64_t host){
  * markers, so keep that path independent of Free Roam state. */
 static uint32_t g_hidden_career_map;
 static void hidden_map_career_update(CPU *c, uint32_t w){
-    if (!w || rd32(G_FLOW) != 6u || !player_car()){
+    if (!w || !player_car()){
         if (g_hidden_career_map){
             g_hidden_career_map = 0;
             g_hidden_map.map = 0;
@@ -3537,6 +3537,8 @@ static void hidden_map_career_update(CPU *c, uint32_t w){
     uint32_t pkg = scr ? rd32(scr + 4u) : 0;
     if (!ok(map, 0x2c) || !ok(pkg, 24)) goto map_closed;
 
+    /* map_update has already installed the shared legend and markers */
+    if (g_wm.done && g_wm.map == map){ g_hidden_career_map = map; return; }
     if (g_hidden_career_map != map){
         g_hidden_career_map = map;
         wmf_begin(map);
@@ -8363,9 +8365,6 @@ void roam_game_frame(CPU *c){
         if (w) park_all(c);
         g_pass.stay_since = g_pass.blocking = 0;
         near_update(c, w, host, 0);
-#if defined(ROAM_HOST_ANDROID)
-        hidden_map_career_update(c, w);
-#endif
     } else {
         /* the outrun challengers' manager first: whether opponent cars are
          * free this frame depends on it (LEND_OPP) */
@@ -8483,6 +8482,11 @@ void roam_game_frame(CPU *c){
         if (!em_why && g_em == EM_HELD) em_let_go();   /* the outrun between players or the lobby is over */
 #endif
     }
+#if defined(ROAM_HOST_ANDROID)
+    /* Run after both Career and Free Roam updates. If the multiplayer map path
+     * already handled this same map this frame, the career path leaves it alone. */
+    hidden_map_career_update(c, w);
+#endif
 #if SAYS
     bump_frame(host, in_roam && world_runs && st == RC_ST_ROAM && !g_racing && g_du.st == DU_IDLE && !mp_busy());
     fly_frame(in_roam && world_runs && st == RC_ST_ROAM, wdt);
