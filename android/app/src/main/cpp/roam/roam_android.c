@@ -543,24 +543,64 @@ __attribute__((weak)) void dispatch_patch(uint32_t a, void (*f)(CPU *)) {
 #define S_CAPS          0x30u         /* stage: 5 caps, a signed byte each */
 #define CAP             8
 
+#define HIDDEN_RACE_MAX 64u
+typedef struct {
+    uint32_t race_hash;
+    uint32_t marker_hash;
+    uint8_t stage;
+} HiddenRaceInfo;
+static HiddenRaceInfo g_hidden_race_info[HIDDEN_RACE_MAX];
+static uint32_t g_hidden_race_count;
+static uint32_t g_hidden_scanned_table;
 static int g_hidden_on = -1;
 static uint32_t g_hidden_done = 0;
 
+/* Snapshot the original hidden-race records before the unlock patch clears
+ * their hidden flag. The World Map uses this snapshot even when unlocking is
+ * disabled, so the map feature does not change Career availability. */
+uint32_t nfsu2_hidden_race_count(void) {
+    return g_hidden_race_count;
+}
+
+int nfsu2_hidden_race_info(uint32_t index, uint32_t *stage, uint32_t *marker_hash) {
+    if (index >= g_hidden_race_count || !stage || !marker_hash) return 0;
+    *stage = g_hidden_race_info[index].stage;
+    *marker_hash = g_hidden_race_info[index].marker_hash;
+    return 1;
+}
+
 static void hiddenraces_frame_tick(void) {
-    if (__builtin_expect(g_hidden_done != 0, 1)) return;
     if (g_hidden_on < 0) {
         const char *e = getenv("NFSU2_SHOW_HIDDEN_RACES");
         g_hidden_on = e && *e && *e != '0' && strcasecmp(e, "off") && strcasecmp(e, "no") && strcasecmp(e, "false");
     }
-    if (!g_hidden_on) return;
     if (!rh_mem_committed(G_RACES, 4) || !rh_mem_committed(G_STAGES, 4)) return;
     uint32_t races = MR32(G_RACES), nr = MR32(G_NRACES), stages = MR32(G_STAGES), ns = MR32(G_NSTAGES);
-    if (!races || races == g_hidden_done || nr > 1024u || ns > 16u || !rh_mem_committed(races, nr * RACE_SZ) || !rh_mem_committed(stages, ns * STAGE_SZ))
+    if (!races || nr > 1024u || ns > 16u || !rh_mem_committed(races, nr * RACE_SZ) || !rh_mem_committed(stages, ns * STAGE_SZ))
         return;
+
+    if (races != g_hidden_scanned_table || !g_hidden_race_count) {
+        g_hidden_race_count = 0;
+        for (uint32_t i = 0; i < nr; i++) {
+            uint32_t r = races + i * RACE_SZ;
+            if (!MR8(r + R_HIDDEN)) continue;
+            if (g_hidden_race_count < HIDDEN_RACE_MAX) {
+                HiddenRaceInfo *info = &g_hidden_race_info[g_hidden_race_count++];
+                info->race_hash = MR32(r + 8u);
+                info->marker_hash = MR32(r + 0x28u);
+                info->stage = MR8(r + 0x37u);
+            }
+        }
+        g_hidden_scanned_table = races;
+        __android_log_print(ANDROID_LOG_INFO, "NFSU2-Roam", "[career] captured %u hidden-race map records", g_hidden_race_count);
+    }
+
+    if (!g_hidden_on || races == g_hidden_done) return;
     int n = 0, caps = 0;
     for (uint32_t i = 0; i < nr; i++) {
-        if (MR8(races + i * RACE_SZ + R_HIDDEN)) {
-            MR8(races + i * RACE_SZ + R_HIDDEN) = 0;
+        uint32_t r = races + i * RACE_SZ;
+        if (MR8(r + R_HIDDEN)) {
+            MR8(r + R_HIDDEN) = 0;
             n++;
         }
     }
