@@ -8152,7 +8152,16 @@ static void car_rescue(int64_t host){
 }
 void roam_game_frame(CPU *c){
     if (!g_inited) init_once(c);
-    if (!O.on) return;
+    /* Hidden Race map filters are a standalone Career feature, not part of
+     * the optional Free Roam Companion. Its frame hook still runs when
+     * NFSU2_ROAM is off (the default), so service the Career map before the
+     * multiplayer early return. */
+    if (!O.on){
+#if defined(ROAM_HOST_ANDROID)
+        hidden_map_career_update(c, world());
+#endif
+        return;
+    }
 #ifndef ROAM_HOST_WIN
     solid_follow();
     crews_follow();
