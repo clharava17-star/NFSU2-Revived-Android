@@ -5,7 +5,7 @@ on:
     branches: [ main ]
     tags: [ 'v*' ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, 'ci-base/v0.15.24-hidden-map' ]
   workflow_dispatch:
 
 permissions:
