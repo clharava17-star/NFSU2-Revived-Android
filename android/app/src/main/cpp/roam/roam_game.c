@@ -3100,6 +3100,11 @@ static int hidden_map_open(CPU *c, uint32_t map, uint32_t pkg, uint32_t pk){
 
     uint32_t count = nfsu2_hidden_race_count();
     uint32_t star = count ? hidden_map_star(c, pkg) : 0;
+    static uint32_t diag_hidden_map;
+    if (diag_hidden_map != map){
+        diag_hidden_map = map;
+        rlog("[HIDDENMAP-DIAG] race snapshot count=%u star=%08x map=%08x", count, star, map);
+    }
     if (!star || !count){
         if (g_hidden_map.tries >= HIDDEN_MAP_RETRIES){
             g_hidden_map.complete = 1;
@@ -3551,6 +3556,10 @@ static void hidden_map_career_update(CPU *c, uint32_t w){
     static int diag_state = 0;
     if (!diag_state){ rlog("[roam] hidden map Career hook reached\\n"); diag_state = 1; }
     if (!w || !player_car()){
+        static unsigned missing_world_log;
+        if ((++missing_world_log % 120u) == 1u)
+            rlog("[HIDDENMAP-DIAG] waiting for Career world/player: world=%08x car=%08x flow=%u companion=%d",
+                 w, player_car(), rd32(G_FLOW), O.on);
         if (g_hidden_career_map){
             g_hidden_career_map = 0;
             g_hidden_map.map = 0;
