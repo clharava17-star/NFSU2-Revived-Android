@@ -3313,7 +3313,13 @@ static void wmf_begin(uint32_t map){
     memset(&g_wmf, 0, sizeof g_wmf); g_wmf.map = map;
 }
 static void wmf_open(CPU *c, uint32_t scr, uint32_t map, uint32_t pkg, uint32_t w){
-    int rows = 0; uint32_t like = 0, line[64 + WMF_TEST0 + WMF_TEST_MAX]; float yl[64];
+    static uint32_t diag_map;
+    static unsigned diag_calls;
+    int diag_now = 0;
+    if (diag_map != map){ diag_map = map; diag_calls = 0; }
+    diag_now = (++diag_calls == 1u || (diag_calls % 120u) == 0u);
+    int rows = 0, custom_made = 0, direct_ok = 0, clone_ok = 0, row_fail = 0;
+    uint32_t like = 0, line[64 + WMF_TEST0 + WMF_TEST_MAX]; float yl[64];
     /* the game's rows, top to bottom (by their ticks' places) */
     for (uint32_t r = rd32(scr + WMF_SCR_ROWS); r && r != scr + WMF_SCR_ROWS && rows < 64 && ok(r, WMF_ROW_SZ); r = rd32(r)){
         int ours = 0;
@@ -3325,6 +3331,9 @@ static void wmf_open(CPU *c, uint32_t scr, uint32_t map, uint32_t pkg, uint32_t 
         for (; j > 0 && yl[j - 1] > y; j--){ yl[j] = yl[j - 1]; line[j] = line[j - 1]; }
         yl[j] = y; line[j] = r; like = r;
     }
+    if (diag_now)
+        rlog("[HIDDENMAP-DIAG] legend scan map=%08x screen=%08x package=%08x rows=%d like=%08x list_head=%08x list_tail=%08x",
+             map, scr, pkg, rows, like, rd32(scr + WMF_SCR_ROWS), rd32(scr + WMF_SCR_ROWS + 4u));
     /* ours after them, in the package's rows past theirs and in copies past the package's; with more rows than the
      * package's, all of them nearer each other.  NFSU2_ROAM_TEST_LEGEND_ROWS=n: n rows more, of no kind (as a fuller
      * legend) */
@@ -3350,12 +3359,18 @@ static void wmf_open(CPU *c, uint32_t scr, uint32_t map, uint32_t pkg, uint32_t 
             int what = i < WMF_N ? i : WMF_TEST0 + i - WMF_N, slot = rows + 1 + i;
             uint32_t o[4], bk = 0, r = i < WMF_N ? g_wmf.row[i] : 0;
             if (!r){
-                int got = slot < WMF_ROWS ? wmf_parts(c, pkg, slot, o, &bk) : 0;
+                int direct = slot < WMF_ROWS ? wmf_parts(c, pkg, slot, o, &bk) : 0;
+                int got = direct;
                 if (!got || !bk) got = wmf_copy_parts(c, pkg, i, o, &bk);
+                if (got && bk){ if (direct) direct_ok++; else clone_ok++; }
                 r = got && bk ? wmf_row(c, scr, pkg, o, bk, what, like, what < WMF_N ? tex[what] : tex[0], what < WMF_N ? col[what] : 0xffffffu) : 0;
                 if (i < WMF_N) g_wmf.row[i] = r;
             }
-            if (r) line[nl++] = r;
+            if (r){ line[nl++] = r; custom_made++; }
+            else row_fail++;
+            if (diag_now)
+                rlog("[HIDDENMAP-DIAG] legend item=%d name=%s slot=%d row=%08x backing=%08x direct=%d total_made=%d failed=%d",
+                     i, wmf_text[what], slot, r, bk, slot < WMF_ROWS, custom_made, row_fail);
         }
         k = wmf_fit(c, scr, pkg, line, nl);
     }
@@ -3376,6 +3391,9 @@ static void wmf_open(CPU *c, uint32_t scr, uint32_t map, uint32_t pkg, uint32_t 
             break;
         }
     }
+    if (diag_now)
+        rlog("[HIDDENMAP-DIAG] legend result map=%08x base_rows=%d like=%08x custom_rows=%d direct=%d clones=%d failed=%d total_rows=%d ready=%d/%d",
+             map, rows, like, custom_made, direct_ok, clone_ok, row_fail, nl, hidden_map_legend_ready(), WMF_N);
     rlog("[roam] f=%ld world map: legend rows %d of the game's, %d in all, at %.2f of their size\n", rh_frame(), rows, nl, (double)k);
     for (int i = 0; i < WMF_N; i++)
         rlog("[roam]   map filter %s: %s\n", wmf_text[i], g_wmf_on[i] ? "shown" : "hidden");
@@ -3552,9 +3570,13 @@ static void hidden_map_career_update(CPU *c, uint32_t w){
         goto map_closed;
     }
 
+    uint32_t h = rd32(pk + PKG_SCREEN);
+    uint32_t sobj = ok(h, 0x18) ? rd32(h + 0x14u) : 0;
+    uint32_t vtable = ok(sobj, 4) ? rd32(sobj) : 0;
     uint32_t scr = wm_screen(pk);
     if (!scr){
-        if (diag_state != 3){ rlog("[roam] hidden map Career: package found but WorldMap screen vtable did not match (package 0x%08x)\\n", pk); diag_state = 3; }
+        if (diag_state != 3){ rlog("[HIDDENMAP-DIAG] package found but WorldMap screen vtable mismatch pk=%08x handle=%08x screen=%08x vtable=%08x expected=%08x",
+                                  pk, h, sobj, vtable, VT_WM_SCREEN); diag_state = 3; }
         goto map_closed;
     }
     uint32_t map = rd32(scr + WM_MAP), pkg = rd32(scr + 4u);
@@ -3562,7 +3584,8 @@ static void hidden_map_career_update(CPU *c, uint32_t w){
         if (diag_state != 4){ rlog("[roam] hidden map Career: screen has no valid map/package (screen 0x%08x map 0x%08x pkg 0x%08x)\\n", scr, map, pkg); diag_state = 4; }
         goto map_closed;
     }
-    if (diag_state != 5){ rlog("[roam] hidden map Career: WorldMap screen detected (map 0x%08x)\\n", map); diag_state = 5; }
+    if (diag_state != 5){ rlog("[HIDDENMAP-DIAG] WorldMap screen detected flow=%u world=%08x car=%08x map=%08x pkg=%08x g_wmf=%08x g_wm=%08x companion=%d",
+                              rd32(G_FLOW), w, player_car(), map, pkg, g_wmf.map, g_wm.map, O.on); diag_state = 5; }
 
     /* A Career map may be visible one frame before its legend's package rows
      * have been populated. Retry until every custom row has a backing button.
@@ -3578,13 +3601,14 @@ static void hidden_map_career_update(CPU *c, uint32_t w){
             if ((++tries % 120u) == 1u){
                 int ready = 0;
                 for (int i = 0; i < WMF_N; i++) ready += g_wmf.row[i] != 0;
-                rlog("[roam] hidden map Career: waiting for legend rows (map 0x%08x, custom rows %d/%d)\\n",
+                rlog("[HIDDENMAP-DIAG] waiting for legend rows map=%08x custom_rows=%d/%d",
                      map, ready, WMF_N);
             }
             return;
         }
         g_hidden_career_map = map;
-        rlog("[roam] hidden map Career: custom legend rows installed on map 0x%08x\\n", map);
+        rlog("[HIDDENMAP-DIAG] custom legend installed map=%08x count=%d/%d",
+             map, WMF_N, WMF_N);
         gcall0(c, FN_WM_PLACE, map);
     }
     wmf_frame(c, map);
