@@ -3555,7 +3555,7 @@ static void hidden_map_career_update(CPU *c, uint32_t w){
      * have been populated. Retry until every custom row has a backing button.
      * wmf_open is idempotent for rows already installed on this map. */
     if (g_wmf.map != map) wmf_begin(map);
-    if (g_wmf.done && g_wmf.map == map){ g_hidden_career_map = map; return; }
+    if (g_wm.done && g_wm.map == map && hidden_map_legend_ready()){ g_hidden_career_map = map; return; }
     if (g_hidden_career_map != map){
         wmf_open(c, scr, map, pkg, w);
         if (!hidden_map_legend_ready()){
@@ -3638,6 +3638,17 @@ static void map_update(CPU *c, uint32_t w, int64_t host){
                 rh_frame(), MR32(G_WM_COUNT), n, copies);
         roam_plat_lock(); g_wm.gen = g_s.map_gen; roam_plat_unlock();
     }
+#if defined(ROAM_HOST_ANDROID)
+    /* The package can expose its map before FE legend parts/backings are ready.
+     * Retry this idempotent setup after the first open frame as Career continues. */
+    if (g_wmf.map == map && !hidden_map_legend_ready()){
+        wmf_open(c, scr, map, pkg, w);
+        if (hidden_map_legend_ready()){
+            rlog("[roam] f=%ld world map: Hidden Race legend installed after retry\\n", rh_frame());
+            gcall0(c, FN_WM_PLACE, map);
+        }
+    }
+#endif
     wmf_frame(c, map);
 #if defined(ROAM_HOST_ANDROID)
     hidden_map_open(c, map, pkg, pk);
