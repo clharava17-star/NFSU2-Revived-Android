@@ -3100,6 +3100,10 @@ static int hidden_map_open(CPU *c, uint32_t map, uint32_t pkg, uint32_t pk){
 
     uint32_t count = nfsu2_hidden_race_count();
     uint32_t star = count ? hidden_map_star(c, pkg) : 0;
+    if (g_hidden_map.tries == 1)
+        rlog("[HIDDENMAP-DIAG] hidden markers map=%08x pkg=%08x records=%u star=%08x triggers=%08x..%08x",
+             map, pkg, count, star, rd32(G_TRIGGERS + 0x440u + 4u * TRIG_EVENT),
+             rd32(G_TRIGGERS + 0x444u + 4u * TRIG_EVENT));
     if (!star || !count){
         if (g_hidden_map.tries >= HIDDEN_MAP_RETRIES){
             g_hidden_map.complete = 1;
@@ -3108,31 +3112,32 @@ static int hidden_map_open(CPU *c, uint32_t map, uint32_t pkg, uint32_t pk){
         return 0;
     }
 
-    int pending = 0, made = 0;
+    int pending = 0, made = 0, valid = 0, xy_miss = 0, object_miss = 0, room_miss = 0, alloc_miss = 0;
     g_fcl.on = 1; g_fcl.l = 0;
     for (uint32_t i = 0; i < count && g_hidden_map.n < HIDDEN_MAP_MAX; i++){
         uint32_t stage = 0, marker_hash = 0;
         if (!nfsu2_hidden_race_info(i, &stage, &marker_hash) || stage < 1u || stage > HIDDEN_MAP_STAGE_N || !marker_hash) continue;
+        valid++;
         int duplicate = 0;
         for (int j = 0; j < g_hidden_map.n; j++)
             if (g_hidden_map.stage[j] == stage && g_hidden_map.marker[j] == marker_hash){ duplicate = 1; break; }
         if (duplicate) continue;
 
         float x = 0.f, y = 0.f;
-        if (!hidden_map_xy(marker_hash, &x, &y)){ pending = 1; continue; }
-        if (wm_room(pk) < 1){ pending = 1; break; }
+        if (!hidden_map_xy(marker_hash, &x, &y)){ pending = 1; xy_miss++; continue; }
+        if (wm_room(pk) < 1){ pending = 1; room_miss++; break; }
 
         char name[24]; snprintf(name, sizeof name, "ROAM_HR_%02u", i + 1u);
         uint32_t obj = wm_find(c, pkg, name);
         if (!obj) obj = fe_clone(c, pkg, star, name);
-        if (!obj){ pending = 1; continue; }
+        if (!obj){ pending = 1; object_miss++; continue; }
         fe_colour_to(c, obj, (const int32_t[3]){ HIDDEN_MAP_GOLD & 0xffu, (HIDDEN_MAP_GOLD >> 8) & 0xffu, (HIDDEN_MAP_GOLD >> 16) & 0xffu });
 
         uint32_t m = hidden_map_existing(map, obj);
         if (!m){
             uint32_t sz = WM_MARK_SZ;
             m = rh_call(c, FN_MALLOC, 0, 0, 1, &sz);
-            if (!ok(m, WM_MARK_SZ)){ pending = 1; continue; }
+            if (!ok(m, WM_MARK_SZ)){ pending = 1; alloc_miss++; continue; }
             for (uint32_t b = 0; b < WM_MARK_SZ; b += 4u) MR32(m + b) = 0;
             MR32(m + 8u) = WM_CAR;
             MR32(m + 0xcu) = obj;
@@ -3151,6 +3156,9 @@ static int hidden_map_open(CPU *c, uint32_t map, uint32_t pkg, uint32_t pk){
     }
     g_fcl.on = 0;
 
+    if ((g_hidden_map.tries == 1) || (pending && (g_hidden_map.tries % 120) == 0))
+        rlog("[HIDDENMAP-DIAG] marker pass try=%d records=%u valid=%d made=%d pending=%d no_xy=%d no_obj=%d no_room=%d no_alloc=%d",
+             g_hidden_map.tries, count, valid, made, pending, xy_miss, object_miss, room_miss, alloc_miss);
     if (!pending || g_hidden_map.tries >= HIDDEN_MAP_RETRIES){
         g_hidden_map.complete = 1;
         int stage_count[HIDDEN_MAP_STAGE_N + 1] = {0};
@@ -3313,7 +3321,12 @@ static void wmf_begin(uint32_t map){
     memset(&g_wmf, 0, sizeof g_wmf); g_wmf.map = map;
 }
 static void wmf_open(CPU *c, uint32_t scr, uint32_t map, uint32_t pkg, uint32_t w){
-    int rows = 0; uint32_t like = 0, line[64 + WMF_TEST0 + WMF_TEST_MAX]; float yl[64];
+    static uint32_t diag_map;
+    static unsigned diag_calls;
+    if (diag_map != map){ diag_map = map; diag_calls = 0; }
+    int diag_now = (++diag_calls == 1u || (diag_calls % 120u) == 0u);
+    int rows = 0, made = 0, direct_ok = 0, clone_ok = 0, failed = 0;
+    uint32_t like = 0, line[64 + WMF_TEST0 + WMF_TEST_MAX]; float yl[64];
     /* the game's rows, top to bottom (by their ticks' places) */
     for (uint32_t r = rd32(scr + WMF_SCR_ROWS); r && r != scr + WMF_SCR_ROWS && rows < 64 && ok(r, WMF_ROW_SZ); r = rd32(r)){
         uint32_t t = MR32(r + 8u), d = ok(t, 0x34) ? rd32(t + 0x2cu) : 0;
@@ -3322,6 +3335,9 @@ static void wmf_open(CPU *c, uint32_t scr, uint32_t map, uint32_t pkg, uint32_t 
         for (; j > 0 && yl[j - 1] > y; j--){ yl[j] = yl[j - 1]; line[j] = line[j - 1]; }
         yl[j] = y; line[j] = r; like = r;
     }
+    if (diag_now)
+        rlog("[HIDDENMAP-DIAG] legend scan map=%08x screen=%08x package=%08x rows=%d like=%08x rows_head=%08x rows_tail=%08x",
+             map, scr, pkg, rows, like, rd32(scr + WMF_SCR_ROWS), rd32(scr + WMF_SCR_ROWS + 4u));
     /* ours after them, in the package's rows past theirs and in copies past the package's; with more rows than the
      * package's, all of them nearer each other.  NFSU2_ROAM_TEST_LEGEND_ROWS=n: n rows more, of no kind (as a fuller
      * legend) */
@@ -3346,10 +3362,16 @@ static void wmf_open(CPU *c, uint32_t scr, uint32_t map, uint32_t pkg, uint32_t 
         for (int i = 0; i < WMF_N + test; i++){
             int what = i < WMF_N ? i : WMF_TEST0 + i - WMF_N, slot = rows + 1 + i;
             uint32_t o[4], bk = 0;
-            int got = slot <= WMF_ROWS ? wmf_parts(c, pkg, slot, o, &bk) : wmf_copy_parts(c, pkg, i, o, &bk);
-            uint32_t r = got ? wmf_row(c, scr, pkg, o, bk, what, like, what < WMF_N ? tex[what] : tex[0], what < WMF_N ? col[what] : 0xffffffu) : 0;
+            int direct = slot <= WMF_ROWS ? wmf_parts(c, pkg, slot, o, &bk) : 0;
+            int got = direct;
+            if (!got || !bk) got = wmf_copy_parts(c, pkg, i, o, &bk);
+            if (got && bk){ if (direct) direct_ok++; else clone_ok++; }
+            uint32_t r = got && bk ? wmf_row(c, scr, pkg, o, bk, what, like, what < WMF_N ? tex[what] : tex[0], what < WMF_N ? col[what] : 0xffffffu) : 0;
             if (i < WMF_N) g_wmf.row[i] = r;
-            if (r) line[nl++] = r;
+            if (r){ line[nl++] = r; made++; } else failed++;
+            if (diag_now)
+                rlog("[HIDDENMAP-DIAG] legend item=%d name=%s slot=%d source=%s got=%d row=%08x backing=%08x",
+                     i, wmf_text[what], slot, direct ? "package" : "copy", got, r, bk);
         }
         k = wmf_fit(c, scr, pkg, line, nl);
     }
@@ -3370,6 +3392,9 @@ static void wmf_open(CPU *c, uint32_t scr, uint32_t map, uint32_t pkg, uint32_t 
             break;
         }
     }
+    if (diag_now)
+        rlog("[HIDDENMAP-DIAG] legend result map=%08x base_rows=%d like=%08x custom_rows=%d direct=%d copies=%d failed=%d all_rows=%d",
+             map, rows, like, made, direct_ok, clone_ok, failed, nl);
     rlog("[roam] f=%ld world map: legend rows %d of the game's, %d in all, at %.2f of their size\n", rh_frame(), rows, nl, (double)k);
     for (int i = 0; i < WMF_N; i++)
         rlog("[roam]   map filter %s: %s\n", wmf_text[i], g_wmf_on[i] ? "shown" : "hidden");
@@ -3516,8 +3541,12 @@ static int wm_step(int64_t host){
  * Career world map needs only the package, its legend, and the hidden-race
  * markers, so keep that path independent of Free Roam state. */
 static uint32_t g_hidden_career_map;
+static unsigned g_hidden_career_diag_calls;
 static void hidden_map_career_update(CPU *c, uint32_t w){
-    if (!w || rd32(G_FLOW) != 6u || !player_car()){
+    uint32_t me = player_car(), flow = rd32(G_FLOW);
+    int diag_now = (++g_hidden_career_diag_calls == 1u || (g_hidden_career_diag_calls % 180u) == 0u);
+    if (!w || flow != 6u || !me){
+        if (diag_now) rlog("[HIDDENMAP-DIAG] Career hook gated world=%08x flow=%u player_car=%08x", w, flow, me);
         if (g_hidden_career_map){
             g_hidden_career_map = 0;
             g_hidden_map.map = 0;
@@ -3526,16 +3555,32 @@ static void hidden_map_career_update(CPU *c, uint32_t w){
         return;
     }
     if (!g_gmem) gmem_init(c);
-    if (!g_gmem) return;
+    if (!g_gmem){
+        if (diag_now) rlog("[HIDDENMAP-DIAG] Career hook has no guest scratch allocation");
+        return;
+    }
 
     uint32_t sa = g_gmem + TAG_SCR + 0x48u;
     gstr(sa, WM_PACKAGE, 24);
     uint32_t pk = gcall1(c, FN_FE_PACKAGE, 0, sa);
-    if (!ok(pk, 0x54)) goto map_closed;
+    if (!ok(pk, 0x54)){
+        if (diag_now) rlog("[HIDDENMAP-DIAG] FE package missing name=%s pk=%08x scratch=%08x", WM_PACKAGE, pk, sa);
+        goto map_closed;
+    }
 
+    uint32_t handle = rd32(pk + PKG_SCREEN);
+    uint32_t screen_obj = ok(handle, 0x18) ? rd32(handle + 0x14u) : 0;
+    uint32_t vtable = ok(screen_obj, 4) ? rd32(screen_obj) : 0;
     uint32_t scr = wm_screen(pk), map = scr ? rd32(scr + WM_MAP) : 0;
     uint32_t pkg = scr ? rd32(scr + 4u) : 0;
-    if (!ok(map, 0x2c) || !ok(pkg, 24)) goto map_closed;
+    if (!ok(map, 0x2c) || !ok(pkg, 24)){
+        if (diag_now) rlog("[HIDDENMAP-DIAG] WM screen mismatch pk=%08x handle=%08x screen=%08x vtable=%08x expected=%08x scr=%08x map=%08x pkg=%08x",
+                           pk, handle, screen_obj, vtable, VT_WM_SCREEN, scr, map, pkg);
+        goto map_closed;
+    }
+    if (g_hidden_career_map != map)
+        rlog("[HIDDENMAP-DIAG] Career WorldMap detected flow=%u world=%08x car=%08x map=%08x pkg=%08x",
+             flow, w, me, map, pkg);
 
     if (g_hidden_career_map != map){
         g_hidden_career_map = map;
