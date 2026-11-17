@@ -1,6 +1,9 @@
 name: Build Stance + Player Speed V2 v7 ARM64 APK
 
 on:
+  push:
+    branches:
+      - build/stance-player-speed-v7
   workflow_dispatch:
 
 permissions:
@@ -36,6 +39,10 @@ jobs:
           PATCH_B64="migration/NFSU2_Stance_PlayerSpeed_Migration_v7_apply.patch.xz.b64"
           test -s "$PATCH_B64"
           base64 -d "$PATCH_B64" | xz -dc > "$RUNNER_TEMP/stance-speed-v7.patch"
+          # The patch also adds this workflow when applied to the clean source
+          # branch. This test branch already carries the dispatch workflow;
+          # remove only its worktree copy so the source patch applies cleanly.
+          rm -f .github/workflows/build-stance-speed-v7.yml
           git apply --check "$RUNNER_TEMP/stance-speed-v7.patch"
           git apply "$RUNNER_TEMP/stance-speed-v7.patch"
           rm -f "$RUNNER_TEMP/stance-speed-v7.patch"
