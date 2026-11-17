@@ -1,0 +1,279 @@
+name: Build Stance + Player Speed V2 v7 ARM64 APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-arm64:
+    name: Build source-integrated NFSU2 Revived Stance + Speed APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Guard source baseline branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED_BRANCH="build/stance-player-speed-v7"
+          if [ "${GITHUB_REF_NAME:-}" != "$EXPECTED_BRANCH" ]; then
+            echo "Refusing to build from ${GITHUB_REF_NAME:-unknown}." >&2
+            echo "This overlay is based on $EXPECTED_BRANCH; do not build it from main." >&2
+            exit 1
+          fi
+
+      - name: Apply Stance + Player Speed V2 v7 migration patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          PATCH_B64="migration/NFSU2_Stance_PlayerSpeed_Migration_v7_apply.patch.xz.b64"
+          test -s "$PATCH_B64"
+          base64 -d "$PATCH_B64" | xz -dc > "$RUNNER_TEMP/stance-speed-v7.patch"
+          git apply --check "$RUNNER_TEMP/stance-speed-v7.patch"
+          git apply "$RUNNER_TEMP/stance-speed-v7.patch"
+          rm -f "$RUNNER_TEMP/stance-speed-v7.patch"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang cmake ninja-build git unzip zip \
+            glslang-tools spirv-tools
+
+      - name: Install game-lift Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install capstone pefile unicorn keystone-engine
+
+      - name: Run migration host regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests/migration/run_player_speed_torque_cache_test.sh
+          tests/migration/run_player_speed_yaw_cache_test.sh
+          tests/migration/run_stance_sidecar_persistence_test.sh
+          clang -std=c11 -fsyntax-only -Wall -Wextra -Werror -Wno-missing-field-initializers \
+            -Itests/migration/include -Isrc/runtime src/runtime/stance.c
+          clang -std=c11 -fsyntax-only -Wall -Wextra -Werror -Wno-missing-field-initializers \
+            -Itests/migration/include -Isrc/runtime src/runtime/stance_ui.c
+
+      - name: Fetch and verify supported game executable from Actions Secret
+        shell: bash
+        env:
+          SPEED2_EXE_URL: ${{ secrets.SPEED2_EXE_URL }}
+          GAMEFILES_URL: ${{ secrets.GAMEFILES_URL || secrets.GAMEFILES_ZIP_URL }}
+        run: |
+          set -euo pipefail
+          python scripts/prepare_speed2_exe.py --destination "$GITHUB_WORKSPACE/SPEED2.EXE"
+          echo "PROJECT_DIR=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+          echo "PCRECOMP_DIR=$(dirname "$GITHUB_WORKSPACE")/pcrecomp" >> "$GITHUB_ENV"
+
+      - name: Set up pinned pcrecomp
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$PCRECOMP_DIR"
+          git clone https://github.com/sp00nznet/pcrecomp.git "$PCRECOMP_DIR"
+          git -C "$PCRECOMP_DIR" checkout 35548b8
+          git -C "$PCRECOMP_DIR" config user.name "NFSU2 Migration Build"
+          git -C "$PCRECOMP_DIR" config user.email "nfsu2-migration-build@users.noreply.github.com"
+          git -C "$PCRECOMP_DIR" am "$PROJECT_DIR"/patches/pcrecomp/*.patch
+
+      - name: Generate lifted game C sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+          # Never leave the proprietary source executable in the workspace
+          # beyond lifting, even when a lifting command fails.
+          trap 'rm -f "$PROJECT_DIR/SPEED2.EXE" "$PROJECT_DIR/SPEED2.EXE.verified.tmp"; rm -rf "$PROJECT_DIR/work"' EXIT
+          mkdir -p work src/recomp/gen
+          python scripts/normalize_exe.py "$PROJECT_DIR/SPEED2.EXE" work/SPEED2.analysis.exe
+          python "$PCRECOMP_DIR/tools/cpp/vtable_scan.py" work/SPEED2.analysis.exe --seeds work/vtable_seeds.json
+          python "$PCRECOMP_DIR/tools/cpp/rtti.py" work/SPEED2.analysis.exe --seeds work/rtti_seeds.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          found = set()
+          for filename in ("work/vtable_seeds.json", "work/rtti_seeds.json"):
+              items = json.loads(Path(filename).read_text())
+              if isinstance(items, dict):
+                  items = items.get("seeds", [])
+              for item in items:
+                  value = item.get("address") if isinstance(item, dict) else item
+                  if value is not None:
+                      found.add(int(value, 0) if isinstance(value, str) else int(value))
+          Path("work/seeds_all.json").write_text(json.dumps(
+              [{"address": addr, "note": "recovered virtual method"} for addr in sorted(found)],
+              separators=(",", ":")))
+          print(f"Merged {len(found):,} unique virtual-method seeds")
+          PY
+          python scripts/run_lift.py catalog work/SPEED2.analysis.exe work/seeds_all.json work/catalog.json
+          python scripts/run_lift.py lift work/SPEED2.analysis.exe work/catalog.json src/recomp/gen
+          test -n "$(find src/recomp/gen -maxdepth 1 -name 'recomp_*.c' -print -quit)"
+          rm -f "$PROJECT_DIR/SPEED2.EXE"
+          rm -rf work
+
+      - name: Prepare pinned DXVK Native and libadrenotools
+        shell: bash
+        run: |
+          set -euo pipefail
+          DXVK_DIR="$RUNNER_TEMP/dxvk-native"
+          rm -rf "$DXVK_DIR"
+          git clone https://github.com/Joshua-Ashton/dxvk-native.git "$DXVK_DIR"
+          git -C "$DXVK_DIR" checkout c8dc91fabd00cac11d697ccf07426e798393cd40
+          python "$PROJECT_DIR/ports/dxvk_android/prepare.py" \
+            "$DXVK_DIR" "$PROJECT_DIR/build/dxvk-source"
+          python "$PROJECT_DIR/ports/dxvk_android/shaders.py" "$PROJECT_DIR/build/dxvk-source"
+          rm -rf "$PROJECT_DIR/third_party/libadrenotools"
+          git clone --recurse-submodules https://github.com/bylaws/libadrenotools.git \
+            "$PROJECT_DIR/third_party/libadrenotools"
+          git -C "$PROJECT_DIR/third_party/libadrenotools" submodule update --init --recursive
+          test -f "$PROJECT_DIR/third_party/libadrenotools/lib/linkernsbypass/CMakeLists.txt"
+
+      - name: Install Android SDK, NDK and CMake
+        uses: android-actions/setup-android@v4
+
+      - name: Install pinned Android packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +o pipefail
+          yes | sdkmanager --licenses >/dev/null
+          set -o pipefail
+          sdkmanager --install \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;28.2.13676358" \
+            "cmake;3.30.5" \
+            "platform-tools"
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          test -n "$SDK_ROOT"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$SDK_ROOT/ndk/28.2.13676358" >> "$GITHUB_ENV"
+          test -x "$SDK_ROOT/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
+
+      - name: Install Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+          source "$HOME/.cargo/env"
+          rustup show
+
+      - name: Build Rust support libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup target add aarch64-linux-android
+          CLANG_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CLANG_BIN"
+          OUT="$PROJECT_DIR/android/app/src/main/jniLibs/arm64-v8a"
+          mkdir -p "$OUT"
+          for crate in perf_cores roam_rs game_core graphics_cache; do
+            cargo build --manifest-path "$PROJECT_DIR/android/app/src/main/rust/$crate/Cargo.toml" \
+              --target aarch64-linux-android --release
+            cp "$PROJECT_DIR/android/app/src/main/rust/$crate/target/aarch64-linux-android/release/lib${crate}.so" "$OUT/"
+          done
+
+      - name: Enable source-built CMake library for this workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p = Path("android/app/build.gradle")
+          s = p.read_text()
+          if "ndkVersion '28.2.13676358'" not in s:
+              s = s.replace("    compileSdk 35\n", "    compileSdk 35\n    ndkVersion '28.2.13676358'\n", 1)
+          if "path file('src/main/cpp/CMakeLists.txt')" not in s:
+              s = s.replace(
+                  "        ndk { abiFilters 'arm64-v8a' }\n",
+                  "        ndk { abiFilters 'arm64-v8a' }\n"
+                  "        externalNativeBuild { cmake { arguments '-DANDROID_STL=c++_static', '-DNFS_GUEST_LTO=OFF' } }\n",
+                  1)
+              s = s.replace(
+                  "    sourceSets {\n",
+                  "    externalNativeBuild { cmake { path file('src/main/cpp/CMakeLists.txt'); version '3.30.5' } }\n"
+                  "    sourceSets {\n",
+                  1)
+          if "applicationIdSuffix '.stance-speed-test'" not in s:
+              s = s.replace(
+                  "    buildTypes {\n",
+                  "    buildTypes {\n"
+                  "        debug { applicationIdSuffix '.stance-speed-test'; versionNameSuffix '-stance-speed-test' }\n",
+                  1)
+          if "path file('src/main/cpp/CMakeLists.txt')" not in s:
+              raise SystemExit("Could not enable the native CMake build in app/build.gradle")
+          if "applicationIdSuffix '.stance-speed-test'" not in s:
+              raise SystemExit("Could not isolate the Stance + Speed test APK from the installed stable app")
+          p.write_text(s)
+          PY
+
+      - name: Build Native Free Roam Companion
+        shell: bash
+        run: |
+          set -euo pipefail
+          CLANG_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
+          ROAM_RUST_LIB="$PROJECT_DIR/android/app/src/main/rust/roam_rs/target/aarch64-linux-android/release/libroam_rs.a"
+          RUST_FLAGS=""
+          RUST_OBJS=""
+          if [ -f "$ROAM_RUST_LIB" ]; then
+            RUST_FLAGS="-DROAM_CORE_RUST=1"
+            RUST_OBJS="$ROAM_RUST_LIB"
+          fi
+          OUT="$PROJECT_DIR/android/app/src/main/jniLibs/arm64-v8a"
+          mkdir -p "$OUT"
+          "$CLANG_BIN" -std=c11 -O3 -fomit-frame-pointer -shared -fPIC -ffp-contract=off -fno-strict-aliasing \
+            -DROAM_HOST_ANDROID -DROAM_HOST_WIN=1 $RUST_FLAGS \
+            -I"$PROJECT_DIR/android/app/src/main/cpp/roam" \
+            "$PROJECT_DIR/android/app/src/main/cpp/roam/roam_core.c" \
+            "$PROJECT_DIR/android/app/src/main/cpp/roam/roam_game.c" \
+            "$PROJECT_DIR/android/app/src/main/cpp/roam/roam_android.c" \
+            $RUST_OBJS -lm -llog -ldl -o "$OUT/libnfsu2_roam.so"
+          ls -lh "$OUT/libnfsu2_roam.so"
+
+      - name: Build source-integrated ARM64 APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR/android"
+          chmod +x ./gradlew
+          ./gradlew --no-daemon --max-workers=2 assembleDebug
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+          test -s "$APK"
+          unzip -l "$APK" | grep -q 'lib/arm64-v8a/libnfsu2_android.so'
+          unzip -l "$APK" | grep -q 'lib/arm64-v8a/libnfsu2_roam.so'
+          sha256sum "$APK"
+          mkdir -p "$PROJECT_DIR/artifacts"
+          cp "$APK" "$PROJECT_DIR/artifacts/NFSU2-Revived-Stance-PlayerSpeed-v7-arm64-debug.apk"
+
+      - name: Upload migrated APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: NFSU2-Revived-Stance-PlayerSpeed-v7-ARM64
+          path: artifacts/NFSU2-Revived-Stance-PlayerSpeed-v7-arm64-debug.apk
+          if-no-files-found: error
+          retention-days: 14
