@@ -12,6 +12,7 @@
 #include <thread>
 #include <chrono>
 #include <filesystem>
+#include <dlfcn.h>
 #include <cstdlib>
 #include <unistd.h>
 #include "vertex_formats.h"
