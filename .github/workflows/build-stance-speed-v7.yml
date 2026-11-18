@@ -115,32 +115,29 @@ jobs:
           runtime_source = runtime_path.read_text()
           bridge_marker = 'extern "C" int nfs_guest_mem_ok(uint32_t va, uint32_t bytes)'
           if bridge_marker not in runtime_source:
-              runtime_source += """
-
-extern "C" int nfs_guest_mem_ok(uint32_t va, uint32_t bytes) {
-    return memory && memory->readable(va, bytes) ? 1 : 0;
-}
-
-extern "C" uint32_t nfs_guest_call_raw(uint32_t va, uint32_t ecx, uint32_t edx,
-    uint32_t count, const uint32_t* args) {
-    if (count && !args) return 0;
-    State caller; caller.save();
-    try {
-        g_ecx = ecx; g_edx = edx;
-        uint32_t result = callGuest(va, args, size_t(count), 0, false);
-        caller.load();
-        return result;
-    } catch (...) {
-        caller.load();
-        return 0;
-    }
-}
-"""
+              runtime_source += (
+                  "\\n\\nextern \\"C\\" int nfs_guest_mem_ok(uint32_t va, uint32_t bytes) {\\n"
+                  "    return memory && memory->readable(va, bytes) ? 1 : 0;\\n"
+                  "}\\n\\n"
+                  "extern \\"C\\" uint32_t nfs_guest_call_raw(uint32_t va, uint32_t ecx, uint32_t edx,\\n"
+                  "    uint32_t count, const uint32_t* args) {\\n"
+                  "    if (count && !args) return 0;\\n"
+                  "    State caller; caller.save();\\n"
+                  "    try {\\n"
+                  "        g_ecx = ecx; g_edx = edx;\\n"
+                  "        uint32_t result = callGuest(va, args, size_t(count), 0, false);\\n"
+                  "        caller.load();\\n"
+                  "        return result;\\n"
+                  "    } catch (...) {\\n"
+                  "        caller.load();\\n"
+                  "        return 0;\\n"
+                  "    }\\n"
+                  "}\\n"
+              )
               runtime_path.write_text(runtime_source)
               print("Added file-scope C ABI guest bridge exports")
           else:
               print("C ABI guest bridge exports already present")
-
           # Link the Rust cdylib that exports Extra Options and SIMD functions.
           cmake_path = Path("android/app/src/main/cpp/CMakeLists.txt")
           cmake_source = cmake_path.read_text()
