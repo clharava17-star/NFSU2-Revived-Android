@@ -289,11 +289,11 @@ jobs:
           # D3D9 lockback requires a safe byte-copy helper. libc memmove is optimized for ARM64.
           replace_repo_exact(
               "android/app/src/main/cpp/d3d9_bridge.cpp",
-              "#include <cstdlib>\\n",
-              "#include <cstdlib>\\n\\n"
-              "extern \\"C\\" void nfs_simd_stream_copy(uint8_t* dst, const uint8_t* src, size_t bytes) {\\n"
-              "    if (dst && src && bytes) std::memmove(dst, src, bytes);\\n"
-              "}\\n",
+              "#include <cstdlib>\n",
+              "#include <cstdlib>\n\n"
+              "extern \"C\" void nfs_simd_stream_copy(uint8_t* dst, const uint8_t* src, size_t bytes) {\n"
+              "    if (dst && src && bytes) std::memmove(dst, src, bytes);\n"
+              "}\n",
           )
           # These TU-local guest readers have no callers in the migrated native source.
           replace_exact(
