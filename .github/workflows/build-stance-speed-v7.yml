@@ -57,8 +57,6 @@ jobs:
           grep -n -C 3 -E 'nfs_guest_(mem_ok|call_raw)|nfs_simd_stream_copy|nfs_extra_options_' src/runtime/stance.c src/runtime/stance_ui.c || true
           echo '=== Runtime callGuest and memory API ==='
           grep -n -C 3 -E 'callGuest\(|guest_is_readable|memory->readable|} // namespace' android/app/src/main/cpp/guest_runtime.cpp | tail -n 140
-          echo '=== Rust C ABI exports ==='
-          nm -D --defined-only android/app/src/main/jniLibs/arm64-v8a/libgraphics_cache.so | grep -E 'nfs_(extra_options_|simd_stream_copy)'
 
       - name: Apply Android NDK 28 native compatibility fixes
         shell: bash
@@ -288,6 +286,15 @@ jobs:
           else:
               print("Rust graphics-cache CMake target already exists.")
 
+          # D3D9 lockback requires a safe byte-copy helper. libc memmove is optimized for ARM64.
+          replace_repo_exact(
+              "android/app/src/main/cpp/d3d9_bridge.cpp",
+              "#include <cstdlib>\\n",
+              "#include <cstdlib>\\n\\n"
+              "extern \\"C\\" void nfs_simd_stream_copy(uint8_t* dst, const uint8_t* src, size_t bytes) {\\n"
+              "    if (dst && src && bytes) std::memmove(dst, src, bytes);\\n"
+              "}\\n",
+          )
           # These TU-local guest readers have no callers in the migrated native source.
           replace_exact(
               "guest_runtime.cpp",
@@ -466,8 +473,10 @@ jobs:
           set -euo pipefail
           LIB="$PROJECT_DIR/android/app/src/main/jniLibs/arm64-v8a/libgraphics_cache.so"
           test -s "$LIB"
-          nm -D --defined-only "$LIB" | grep -E " nfs_extra_options_(init|patch_count|get_patch|is_dumb_ai_enabled)$"
-          nm -D --defined-only "$LIB" | grep -E " nfs_simd_stream_copy$"
+          for symbol in nfs_extra_options_init nfs_extra_options_patch_count nfs_extra_options_get_patch nfs_extra_options_is_dumb_ai_enabled; do
+            nm -D --defined-only "$LIB" | grep -q " $symbol$" || { echo "Missing Rust ABI export: $symbol" >&2; exit 1; }
+          done
+          echo "Rust Extra Options C ABI exports verified."
       - name: Enable source-built CMake library for this workflow
         shell: bash
         run: |
