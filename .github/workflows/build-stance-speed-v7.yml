@@ -106,6 +106,18 @@ jobs:
               "checkGuestProgressFromBridge();",
           )
 
+          # DXVK WSI needs the six render modes but does not consume the active slot.
+          # Keep the five-argument API for callers that need the slot; add a four-argument convenience overload.
+          replace_exact(
+              "android_resolution.h",
+              "    return modes;\\n}\\n",
+              "    return modes;\\n}\\n\\n"
+              "inline std::array<AndroidRenderMode, 6> androidRenderModes(\\n"
+              "    uint32_t displayW, uint32_t displayH, uint32_t initialW, uint32_t initialH) {\\n"
+              "    uint32_t activeSlot = 0;\\n"
+              "    return androidRenderModes(displayW, displayH, initialW, initialH, activeSlot);\\n"
+              "}\\n",
+          )
           # hostGameRoot is std::string; filesystem path concatenation needs path operands.
           replace_exact(
               "guest_files.inc",
