@@ -168,7 +168,7 @@ jobs:
           # These TU-local guest readers have no callers in the migrated native source.
           replace_exact(
               "guest_runtime.cpp",
-              "inline uint16_t read16(uint32_t va) { uint16_t v; std::memcpy(&v, ptr(va,2),2); return v; }\\n",
+              "inline uint16_t read16(uint32_t va) { uint16_t v; std::memcpy(&v, ptr(va,2),2); return v; }\n",
               "",
           )
           replace_exact(
