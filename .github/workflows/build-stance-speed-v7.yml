@@ -110,6 +110,36 @@ jobs:
               "void checkGuestProgressFromBridge() { checkGuestProgress(); }\n\n"
               "#ifdef NFS_SERVER_DLL",
           )
+          # C ABI bridge used by the migrated Stance UI C module.
+          replace_exact(
+              "guest_runtime.cpp",
+              "void checkGuestProgressFromBridge() { checkGuestProgress(); }\\n\\n",
+              "void checkGuestProgressFromBridge() { checkGuestProgress(); }\\n\\n"
+              "extern \\"C\\" int nfs_guest_mem_ok(uint32_t va, uint32_t bytes) {\\n"
+              "    return memory && memory->readable(va, bytes) ? 1 : 0;\\n"
+              "}\\n\\n"
+              "extern \\"C\\" uint32_t nfs_guest_call_raw(uint32_t va, uint32_t ecx, uint32_t edx,\\n"
+              "    uint32_t count, const uint32_t* args) {\\n"
+              "    if (count && !args) return 0;\\n"
+              "    State caller; caller.save();\\n"
+              "    try {\\n"
+              "        g_ecx = ecx; g_edx = edx;\\n"
+              "        uint32_t result = callGuest(va, args, size_t(count), 0, false);\\n"
+              "        caller.load();\\n"
+              "        return result;\\n"
+              "    } catch (...) {\\n"
+              "        caller.load();\\n"
+              "        return 0;\\n"
+              "    }\\n"
+              "}\\n\\n",
+          )
+
+          # Rust graphics_cache exports the Extra Options and SIMD C ABI consumed by this target.
+          replace_repo_exact(
+              "android/app/src/main/cpp/CMakeLists.txt",
+              "target_link_libraries(nfsu2_android PRIVATE native_app_glue android log vulkan dxvk_android aaudio dl)",
+              "target_link_libraries(nfsu2_android PRIVATE native_app_glue android log vulkan dxvk_android aaudio dl \\"${NFS_ROOT}/android/app/src/main/jniLibs/${ANDROID_ABI}/libgraphics_cache.so\\")",
+          )
           replace_exact(
               "d3d9_locks.inc",
               "checkGuestProgress();",
@@ -394,6 +424,14 @@ jobs:
             cp "$PROJECT_DIR/android/app/src/main/rust/$crate/target/aarch64-linux-android/release/lib${crate}.so" "$OUT/"
           done
 
+      - name: Verify graphics-cache C ABI exports
+        shell: bash
+        run: |
+          set -euo pipefail
+          LIB="$PROJECT_DIR/android/app/src/main/jniLibs/arm64-v8a/libgraphics_cache.so"
+          test -s "$LIB"
+          nm -D --defined-only "$LIB" | grep -E " nfs_extra_options_(init|patch_count|get_patch|is_dumb_ai_enabled)$"
+          nm -D --defined-only "$LIB" | grep -E " nfs_simd_stream_copy$"
       - name: Enable source-built CMake library for this workflow
         shell: bash
         run: |
