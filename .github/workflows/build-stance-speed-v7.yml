@@ -47,18 +47,6 @@ jobs:
           git apply "$RUNNER_TEMP/stance-speed-v7.patch"
           rm -f "$RUNNER_TEMP/stance-speed-v7.patch"
 
-      - name: Inspect unresolved guest bridge API from migration patch
-        shell: bash
-        run: |
-          set -euo pipefail
-          PATCH_B64="migration/NFSU2_Stance_PlayerSpeed_Migration_v7_apply.patch.xz.b64"
-          base64 -d "$PATCH_B64" | xz -dc > "$RUNNER_TEMP/stance-speed-v7-audit.patch"
-          echo "=== nfs_guest_mem_ok patch context ==="
-          grep -n -B 10 -A 12 "nfs_guest_mem_ok" "$RUNNER_TEMP/stance-speed-v7-audit.patch" || true
-          echo "=== nfs_guest_call_raw patch context ==="
-          grep -n -B 10 -A 12 "nfs_guest_call_raw" "$RUNNER_TEMP/stance-speed-v7-audit.patch" || true
-          echo "Diagnostic extraction complete; stopping before native compilation."
-          exit 1
       - name: Apply Android NDK 28 native compatibility fixes
         shell: bash
         run: |
@@ -232,6 +220,53 @@ jobs:
               "guest_runtime.cpp",
               "renderHeight?renderHeight:480",
               "renderHeight.load(std::memory_order_relaxed) ? renderHeight.load(std::memory_order_relaxed) : 480",
+          )
+
+          # Expose the guest-memory check and raw guest-call bridge required by stance_ui.c.
+          replace_repo_exact(
+              "guest_runtime.cpp",
+              "void checkGuestProgressFromBridge() { checkGuestProgress(); }\n",
+              "void checkGuestProgressFromBridge() { checkGuestProgress(); }\n"
+              "extern \"C\" int nfs_guest_mem_ok(uint32_t va, uint32_t bytes) {\n"
+              "    std::unique_lock<MachineMutex> lease(machine);\n"
+              "    auto* previousLease = machineLease;\n"
+              "    machineLease = &lease;\n"
+              "    int okay = memory && memory->readable(va, bytes) ? 1 : 0;\n"
+              "    machineLease = previousLease;\n"
+              "    return okay;\n"
+              "}\n"
+              "extern \"C\" uint32_t nfs_guest_call_raw(uint32_t va, uint32_t ecx, uint32_t edx, uint32_t count, const uint32_t* args) {\n"
+              "    if (!memory || (count && !args) || count > 64u) return 0;\n"
+              "    std::unique_lock<MachineMutex> lease(machine);\n"
+              "    auto* previousLease = machineLease;\n"
+              "    machineLease = &lease;\n"
+              "    State original; original.save();\n"
+              "    uint32_t result = 0;\n"
+              "    try {\n"
+              "        g_ecx = ecx; g_edx = edx;\n"
+              "        result = callGuest(va, args, count, 0, false);\n"
+              "    } catch (const std::exception& error) {\n"
+              "        NFS_RUNTIME_LOG(ANDROID_LOG_WARN, \"NFSU2\", \"Stance guest call %08x failed: %s\", va, error.what());\n"
+              "    } catch (...) {\n"
+              "        NFS_RUNTIME_LOG(ANDROID_LOG_WARN, \"NFSU2\", \"Stance guest call %08x failed with unknown exception\", va);\n"
+              "    }\n"
+              "    original.load();\n"
+              "    machineLease = previousLease;\n"
+              "    return result;\n"
+              "}\n",
+          )
+
+          # Link the Rust graphics-cache C ABI shared library into the Android native target.
+          replace_repo_exact(
+              "android/app/src/main/cpp/CMakeLists.txt",
+              "target_link_libraries(nfsu2_android PRIVATE native_app_glue android log vulkan dxvk_android aaudio dl)\n",
+              "set(NFS_GRAPHICS_CACHE_SO \"${NFS_ROOT}/android/app/src/main/jniLibs/${ANDROID_ABI}/libgraphics_cache.so\")\n"
+              "if(NOT EXISTS \"${NFS_GRAPHICS_CACHE_SO}\")\n"
+              "    message(FATAL_ERROR \"Missing Rust graphics-cache shared library: ${NFS_GRAPHICS_CACHE_SO}\")\n"
+              "endif()\n"
+              "add_library(nfs_graphics_cache SHARED IMPORTED GLOBAL)\n"
+              "set_target_properties(nfs_graphics_cache PROPERTIES IMPORTED_LOCATION \"${NFS_GRAPHICS_CACHE_SO}\")\n"
+              "target_link_libraries(nfsu2_android PRIVATE native_app_glue android log vulkan dxvk_android aaudio dl nfs_graphics_cache)\n",
           )
 
           # These TU-local guest readers have no callers in the migrated native source.
