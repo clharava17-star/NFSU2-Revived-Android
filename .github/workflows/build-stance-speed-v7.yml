@@ -173,7 +173,7 @@ jobs:
           )
           replace_exact(
               "guest_runtime.cpp",
-              "inline uint8_t read8(uint32_t va) { uint8_t v; std::memcpy(&v, ptr(va,1),1); return v; }\\n",
+              "inline uint8_t read8(uint32_t va) { uint8_t v; std::memcpy(&v, ptr(va,1),1); return v; }\n",
               "",
           )
           print("All native compatibility fixes applied.")
