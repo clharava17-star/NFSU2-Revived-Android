@@ -256,18 +256,24 @@ jobs:
               "}\n",
           )
 
-          # Link the Rust graphics-cache C ABI shared library into the Android native target.
-          replace_repo_exact(
-              "android/app/src/main/cpp/CMakeLists.txt",
-              "target_link_libraries(nfsu2_android PRIVATE native_app_glue android log vulkan dxvk_android aaudio dl)\n",
-              "set(NFS_GRAPHICS_CACHE_SO \"${NFS_ROOT}/android/app/src/main/jniLibs/${ANDROID_ABI}/libgraphics_cache.so\")\n"
-              "if(NOT EXISTS \"${NFS_GRAPHICS_CACHE_SO}\")\n"
-              "    message(FATAL_ERROR \"Missing Rust graphics-cache shared library: ${NFS_GRAPHICS_CACHE_SO}\")\n"
-              "endif()\n"
-              "add_library(nfs_graphics_cache SHARED IMPORTED GLOBAL)\n"
-              "set_target_properties(nfs_graphics_cache PROPERTIES IMPORTED_LOCATION \"${NFS_GRAPHICS_CACHE_SO}\")\n"
-              "target_link_libraries(nfsu2_android PRIVATE native_app_glue android log vulkan dxvk_android aaudio dl nfs_graphics_cache)\n",
-          )
+          # Append an imported target instead of matching a CMake link line that migration may rewrite.
+          cmake_path = Path("android/app/src/main/cpp/CMakeLists.txt")
+          cmake_source = cmake_path.read_text()
+          if "add_library(nfs_graphics_cache SHARED IMPORTED GLOBAL)" not in cmake_source:
+              cmake_source += (
+                  '\n# Rust C ABI library built earlier by this workflow.\n'
+                  'set(NFS_GRAPHICS_CACHE_SO "${CMAKE_CURRENT_SOURCE_DIR}/../jniLibs/${ANDROID_ABI}/libgraphics_cache.so")\n'
+                  'if(NOT EXISTS "${NFS_GRAPHICS_CACHE_SO}")\n'
+                  '    message(FATAL_ERROR "Missing Rust graphics-cache library: ${NFS_GRAPHICS_CACHE_SO}")\n'
+                  'endif()\n'
+                  'add_library(nfs_graphics_cache SHARED IMPORTED GLOBAL)\n'
+                  'set_target_properties(nfs_graphics_cache PROPERTIES IMPORTED_LOCATION "${NFS_GRAPHICS_CACHE_SO}")\n'
+                  'target_link_libraries(nfsu2_android PRIVATE nfs_graphics_cache)\n'
+              )
+              cmake_path.write_text(cmake_source)
+              print("Linked Rust graphics-cache shared library into nfsu2_android.")
+          else:
+              print("Rust graphics-cache CMake target already exists.")
 
           # These TU-local guest readers have no callers in the migrated native source.
           replace_exact(
