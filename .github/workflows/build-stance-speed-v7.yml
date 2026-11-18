@@ -280,15 +280,6 @@ jobs:
               "inline uint8_t read8(uint32_t va) { uint8_t v; std::memcpy(&v, ptr(va,1),1); return v; }\n",
               "",
           )
-          # Link the already-built Rust graphics_cache shared library so its C ABI exports
-          # (extra options and SIMD stream copy) resolve during the native app link.
-          replace_repo_exact(
-              "android/app/src/main/cpp/CMakeLists.txt",
-              "target_link_libraries(nfsu2_android PRIVATE native_app_glue android log vulkan dxvk_android aaudio dl)\\n",
-              "add_library(nfs_graphics_cache SHARED IMPORTED GLOBAL)\\n"
-              "set_target_properties(nfs_graphics_cache PROPERTIES IMPORTED_LOCATION \\"${NFS_ROOT}/android/app/src/main/jniLibs/${ANDROID_ABI}/libgraphics_cache.so\\")\\n"
-              "target_link_libraries(nfsu2_android PRIVATE native_app_glue android log vulkan dxvk_android aaudio dl nfs_graphics_cache)\\n",
-          )
           print("All native compatibility fixes applied.")
           PY
 
