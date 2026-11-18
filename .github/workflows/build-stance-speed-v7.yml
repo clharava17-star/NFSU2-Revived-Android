@@ -226,15 +226,15 @@ jobs:
                   "    externalNativeBuild { cmake { path file('src/main/cpp/CMakeLists.txt'); version '3.30.5' } }\n"
                   "    sourceSets {\n",
                   1)
-          if "applicationIdSuffix '.stance-speed-test'" not in s:
+          if "applicationIdSuffix '.stance_speed_test'" not in s:
               s = s.replace(
                   "    buildTypes {\n",
                   "    buildTypes {\n"
-                  "        debug { applicationIdSuffix '.stance-speed-test'; versionNameSuffix '-stance-speed-test' }\n",
+                  "        debug { applicationIdSuffix '.stance_speed_test'; versionNameSuffix '-stance-speed-test' }\n",
                   1)
           if "path file('src/main/cpp/CMakeLists.txt')" not in s:
               raise SystemExit("Could not enable the native CMake build in app/build.gradle")
-          if "applicationIdSuffix '.stance-speed-test'" not in s:
+          if "applicationIdSuffix '.stance_speed_test'" not in s:
               raise SystemExit("Could not isolate the Stance + Speed test APK from the installed stable app")
           p.write_text(s)
           PY
