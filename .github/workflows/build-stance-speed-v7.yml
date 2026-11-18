@@ -149,19 +149,6 @@ jobs:
               print("Added file-scope C ABI guest bridge exports")
           else:
               print("C ABI guest bridge exports already present")
-          # Link the Rust cdylib that exports Extra Options and SIMD functions.
-          cmake_path = Path("android/app/src/main/cpp/CMakeLists.txt")
-          cmake_source = cmake_path.read_text()
-          cmake_needle = "target_link_libraries(nfsu2_android PRIVATE native_app_glue android log vulkan dxvk_android aaudio dl)"
-          cmake_replacement = cmake_needle[:-1] + ' "${NFS_ROOT}/android/app/src/main/jniLibs/${ANDROID_ABI}/libgraphics_cache.so")'
-          if "libgraphics_cache.so" not in cmake_source:
-              if cmake_source.count(cmake_needle) != 1:
-                  raise SystemExit("Could not find exactly one nfsu2_android link line for graphics_cache")
-              cmake_source = cmake_source.replace(cmake_needle, cmake_replacement, 1)
-              cmake_path.write_text(cmake_source)
-              print("Linked libgraphics_cache.so into nfsu2_android")
-          else:
-              print("libgraphics_cache.so is already linked")
           replace_exact(
               "d3d9_locks.inc",
               "checkGuestProgress();",
@@ -231,40 +218,6 @@ jobs:
               "guest_runtime.cpp",
               "renderHeight?renderHeight:480",
               "renderHeight.load(std::memory_order_relaxed) ? renderHeight.load(std::memory_order_relaxed) : 480",
-          )
-
-          # Expose the guest-memory check and raw guest-call bridge required by stance_ui.c.
-          replace_repo_exact(
-              "android/app/src/main/cpp/guest_runtime.cpp",
-              "void checkGuestProgressFromBridge() { checkGuestProgress(); }\n",
-              "void checkGuestProgressFromBridge() { checkGuestProgress(); }\n"
-              "extern \"C\" int nfs_guest_mem_ok(uint32_t va, uint32_t bytes) {\n"
-              "    std::unique_lock<MachineMutex> lease(machine);\n"
-              "    auto* previousLease = machineLease;\n"
-              "    machineLease = &lease;\n"
-              "    int okay = memory && memory->readable(va, bytes) ? 1 : 0;\n"
-              "    machineLease = previousLease;\n"
-              "    return okay;\n"
-              "}\n"
-              "extern \"C\" uint32_t nfs_guest_call_raw(uint32_t va, uint32_t ecx, uint32_t edx, uint32_t count, const uint32_t* args) {\n"
-              "    if (!memory || (count && !args) || count > 64u) return 0;\n"
-              "    std::unique_lock<MachineMutex> lease(machine);\n"
-              "    auto* previousLease = machineLease;\n"
-              "    machineLease = &lease;\n"
-              "    State original; original.save();\n"
-              "    uint32_t result = 0;\n"
-              "    try {\n"
-              "        g_ecx = ecx; g_edx = edx;\n"
-              "        result = callGuest(va, args, count, 0, false);\n"
-              "    } catch (const std::exception& error) {\n"
-              "        NFS_RUNTIME_LOG(ANDROID_LOG_WARN, \"NFSU2\", \"Stance guest call %08x failed: %s\", va, error.what());\n"
-              "    } catch (...) {\n"
-              "        NFS_RUNTIME_LOG(ANDROID_LOG_WARN, \"NFSU2\", \"Stance guest call %08x failed with unknown exception\", va);\n"
-              "    }\n"
-              "    original.load();\n"
-              "    machineLease = previousLease;\n"
-              "    return result;\n"
-              "}\n",
           )
 
           # Append an imported target instead of matching a CMake link line that migration may rewrite.
