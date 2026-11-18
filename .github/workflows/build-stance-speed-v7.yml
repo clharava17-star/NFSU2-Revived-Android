@@ -224,7 +224,7 @@ jobs:
 
           # Expose the guest-memory check and raw guest-call bridge required by stance_ui.c.
           replace_repo_exact(
-              "guest_runtime.cpp",
+              "android/app/src/main/cpp/guest_runtime.cpp",
               "void checkGuestProgressFromBridge() { checkGuestProgress(); }\n",
               "void checkGuestProgressFromBridge() { checkGuestProgress(); }\n"
               "extern \"C\" int nfs_guest_mem_ok(uint32_t va, uint32_t bytes) {\n"
