@@ -110,35 +110,50 @@ jobs:
               "void checkGuestProgressFromBridge() { checkGuestProgress(); }\n\n"
               "#ifdef NFS_SERVER_DLL",
           )
-          # C ABI bridge used by the migrated Stance UI C module.
-          bridge_anchor = "void checkGuestProgressFromBridge() { checkGuestProgress(); }\\n\\n"
-          bridge_definitions = "\\n".join([
-              'extern "C" int nfs_guest_mem_ok(uint32_t va, uint32_t bytes) {',
-              '    return memory && memory->readable(va, bytes) ? 1 : 0;',
-              '}',
-              '',
-              'extern "C" uint32_t nfs_guest_call_raw(uint32_t va, uint32_t ecx, uint32_t edx,',
-              '    uint32_t count, const uint32_t* args) {',
-              '    if (count && !args) return 0;',
-              '    State caller; caller.save();',
-              '    try {',
-              '        g_ecx = ecx; g_edx = edx;',
-              '        uint32_t result = callGuest(va, args, size_t(count), 0, false);',
-              '        caller.load();',
-              '        return result;',
-              '    } catch (...) {',
-              '        caller.load();',
-              '        return 0;',
-              '    }',
-              '}',
-          ]) + "\\n"
-          replace_exact("guest_runtime.cpp", bridge_anchor, bridge_anchor + bridge_definitions)
-          # Rust graphics_cache exports the Extra Options and SIMD C ABI consumed by this target.
-          replace_repo_exact(
-              "android/app/src/main/cpp/CMakeLists.txt",
-              'target_link_libraries(nfsu2_android PRIVATE native_app_glue android log vulkan dxvk_android aaudio dl)',
-              'target_link_libraries(nfsu2_android PRIVATE native_app_glue android log vulkan dxvk_android aaudio dl "${NFS_ROOT}/android/app/src/main/jniLibs/${ANDROID_ABI}/libgraphics_cache.so")',
-          )
+          # Add C ABI runtime entry points at file scope, after all anonymous namespaces.
+          runtime_path = Path("android/app/src/main/cpp/guest_runtime.cpp")
+          runtime_source = runtime_path.read_text()
+          bridge_marker = 'extern "C" int nfs_guest_mem_ok(uint32_t va, uint32_t bytes)'
+          if bridge_marker not in runtime_source:
+              runtime_source += """
+
+extern "C" int nfs_guest_mem_ok(uint32_t va, uint32_t bytes) {
+    return memory && memory->readable(va, bytes) ? 1 : 0;
+}
+
+extern "C" uint32_t nfs_guest_call_raw(uint32_t va, uint32_t ecx, uint32_t edx,
+    uint32_t count, const uint32_t* args) {
+    if (count && !args) return 0;
+    State caller; caller.save();
+    try {
+        g_ecx = ecx; g_edx = edx;
+        uint32_t result = callGuest(va, args, size_t(count), 0, false);
+        caller.load();
+        return result;
+    } catch (...) {
+        caller.load();
+        return 0;
+    }
+}
+"""
+              runtime_path.write_text(runtime_source)
+              print("Added file-scope C ABI guest bridge exports")
+          else:
+              print("C ABI guest bridge exports already present")
+
+          # Link the Rust cdylib that exports Extra Options and SIMD functions.
+          cmake_path = Path("android/app/src/main/cpp/CMakeLists.txt")
+          cmake_source = cmake_path.read_text()
+          cmake_needle = "target_link_libraries(nfsu2_android PRIVATE native_app_glue android log vulkan dxvk_android aaudio dl)"
+          cmake_replacement = cmake_needle[:-1] + ' "${NFS_ROOT}/android/app/src/main/jniLibs/${ANDROID_ABI}/libgraphics_cache.so")'
+          if "libgraphics_cache.so" not in cmake_source:
+              if cmake_source.count(cmake_needle) != 1:
+                  raise SystemExit("Could not find exactly one nfsu2_android link line for graphics_cache")
+              cmake_source = cmake_source.replace(cmake_needle, cmake_replacement, 1)
+              cmake_path.write_text(cmake_source)
+              print("Linked libgraphics_cache.so into nfsu2_android")
+          else:
+              print("libgraphics_cache.so is already linked")
           replace_exact(
               "d3d9_locks.inc",
               "checkGuestProgress();",
