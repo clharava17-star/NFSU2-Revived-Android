@@ -81,7 +81,30 @@ jobs:
               "void setGuestWidescreen(bool enabled);\n",
               "void setGuestWidescreen(bool enabled);\nvoid setGuestScreenMode(int mode);\n",
           )
-          replace_exact("guest_runtime.h", "void checkGuestProgress();\n", "")
+          # Keep the scheduler implementation private, but expose narrow bridge/host callbacks.
+          replace_exact(
+              "guest_runtime.h",
+              "void checkGuestProgress();\n",
+              "void checkGuestProgressFromBridge();\nvoid notifyHaltToHost(const char* message);\n",
+          )
+          replace_exact(
+              "guest_runtime.cpp",
+              "void notifyHaltToHost(const char* message);\n\n",
+              "",
+          )
+          replace_exact(
+              "guest_runtime.cpp",
+              "} // namespace\n\n#ifdef NFS_SERVER_DLL",
+              "} // namespace\n\n"
+              "// Bridge-visible checkpoint; scheduler internals stay translation-unit local.\n"
+              "void checkGuestProgressFromBridge() { checkGuestProgress(); }\n\n"
+              "#ifdef NFS_SERVER_DLL",
+          )
+          replace_exact(
+              "d3d9_locks.inc",
+              "checkGuestProgress();",
+              "checkGuestProgressFromBridge();",
+          )
 
           # hostGameRoot is std::string; filesystem path concatenation needs path operands.
           replace_exact(
