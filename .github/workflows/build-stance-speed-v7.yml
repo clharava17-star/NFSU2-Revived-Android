@@ -210,7 +210,17 @@ jobs:
             echo
             for symbol in nfs_guest_mem_ok nfs_guest_call_raw nfs_simd_stream_copy nfs_extra_options_is_dumb_ai_enabled nfs_extra_options_init nfs_extra_options_patch_count nfs_extra_options_get_patch; do
               echo
-              echo "[$symbol]"
+              echo
+            echo "Rust bridge symbol matches:"
+            grep -R -n --include="*.rs" -E "nfs_guest_mem_ok|nfs_guest_call_raw|nfs_simd_stream_copy|nfs_extra_options_" android/app/src/main/rust 2>/dev/null || true
+            for source in src/runtime/stance_ui.c src/runtime/stance.c src/runtime/stance.h android/app/src/main/cpp/guest_extra_options.inc; do
+              if [ -f "$source" ]; then
+                echo
+                echo "===== $source ====="
+                sed -n "1,260p" "$source"
+              fi
+            done
+            echo "[$symbol]"
               grep -R -n --include='*.c' --include='*.cc' --include='*.cpp' --include='*.h' --include='*.hpp' --include='*.inc' "$symbol" src android ports 2>/dev/null || true
             done
             echo
