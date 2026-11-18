@@ -195,6 +195,37 @@ jobs:
           print("All native compatibility fixes applied.")
           PY
 
+      - name: Audit migrated native runtime symbol wiring
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/nfsu2-link-audit/native-link-audit.txt"
+          mkdir -p "$(dirname "$OUT")"
+          {
+            echo 'NFSU2 v7 migration native link audit'
+            echo '==================================='
+            echo
+            echo 'Runtime source files:'
+            find src/runtime -type f -print | sort
+            echo
+            for symbol in nfs_guest_mem_ok nfs_guest_call_raw nfs_simd_stream_copy nfs_extra_options_is_dumb_ai_enabled nfs_extra_options_init nfs_extra_options_patch_count nfs_extra_options_get_patch; do
+              echo
+              echo "[$symbol]"
+              grep -R -n --include='*.c' --include='*.cc' --include='*.cpp' --include='*.h' --include='*.hpp' --include='*.inc' "$symbol" src android ports 2>/dev/null || true
+            done
+            echo
+            echo 'Native CMake target source wiring:'
+            grep -n -A14 -B2 -E 'add_library\(nfsu2_android|target_sources\(nfsu2_android' android/app/src/main/cpp/CMakeLists.txt || true
+          } > "$OUT"
+          cat "$OUT"
+
+      - name: Upload native link audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: NFSU2-v7-native-link-audit
+          path: ${{ runner.temp }}/nfsu2-link-audit/native-link-audit.txt
+          if-no-files-found: error
+          retention-days: 7
       - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
