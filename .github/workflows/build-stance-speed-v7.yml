@@ -120,8 +120,7 @@ jobs:
           replace_repo_exact(
               "ports/dxvk_android/android_wsi.cpp",
               "    auto sizes=androidRenderModes(screenWidth,screenHeight,renderWidth?renderWidth:screenWidth,renderHeight?renderHeight:screenHeight);",
-              "    uint32_t activeSlot = 0;\\n"
-              "    auto sizes=androidRenderModes(screenWidth,screenHeight,renderWidth?renderWidth:screenWidth,renderHeight?renderHeight:screenHeight,activeSlot);",
+              "    uint32_t activeSlot = 0; auto sizes=androidRenderModes(screenWidth,screenHeight,renderWidth?renderWidth:screenWidth,renderHeight?renderHeight:screenHeight,activeSlot);",
           )
           # hostGameRoot is std::string; filesystem path concatenation needs path operands.
           replace_exact(
