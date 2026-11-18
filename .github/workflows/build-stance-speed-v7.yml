@@ -47,6 +47,104 @@ jobs:
           git apply "$RUNNER_TEMP/stance-speed-v7.patch"
           rm -f "$RUNNER_TEMP/stance-speed-v7.patch"
 
+      - name: Apply Android NDK 28 native compatibility fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          CPP = Path("android/app/src/main/cpp")
+
+          def replace_exact(name, old, new, expected=1):
+              path = CPP / name
+              source = path.read_text()
+              found = source.count(old)
+              if found != expected:
+                  raise SystemExit(
+                      f"{name}: expected {expected} exact match(es), found {found}; refusing partial patch"
+                  )
+              path.write_text(source.replace(old, new))
+              print(f"Patched {name}: {found} replacement(s)")
+
+          # The host status callback is used before its static definition.
+          replace_exact(
+              "main.cpp",
+              "void notifyHaltToHost(const char* message) {",
+              "static void showStatus(android_app* app, const char* message);\n\n"
+              "void notifyHaltToHost(const char* message) {",
+          )
+
+          # Keep the native bridge declarations aligned with the implemented API.
+          replace_exact(
+              "guest_runtime.h",
+              "void setGuestWidescreen(bool enabled);\n",
+              "void setGuestWidescreen(bool enabled);\nvoid setGuestScreenMode(int mode);\n",
+          )
+          replace_exact("guest_runtime.h", "void checkGuestProgress();\n", "")
+
+          # hostGameRoot is std::string; filesystem path concatenation needs path operands.
+          replace_exact(
+              "guest_files.inc",
+              'hostGameRoot / "LANGUAGES"',
+              'std::filesystem::path(hostGameRoot) / "LANGUAGES"',
+              expected=6,
+          )
+          replace_exact(
+              "guest_files.inc",
+              'hostGameRoot / "memcard"',
+              'std::filesystem::path(hostGameRoot) / "memcard"',
+              expected=4,
+          )
+
+          # The map is explicitly declared as recursive_mutex in this runtime.
+          replace_exact(
+              "guest_kernel.inc",
+              "std::make_shared<FairMutex>()",
+              "std::make_shared<std::recursive_mutex>()",
+          )
+
+          # AAudio's content-type enum has MUSIC/MOVIE/etc.; GAME is a usage, not a content type.
+          replace_exact(
+              "guest_audio.inc",
+              "AAUDIO_CONTENT_TYPE_GAME",
+              "AAUDIO_CONTENT_TYPE_MUSIC",
+          )
+
+          # Widen address arithmetic before comparing to the 4 GiB guest address-space size.
+          replace_exact(
+              "guest_win32_core.inc",
+              "s1 + len1 * 2 < GuestMemory::size",
+              "static_cast<uint64_t>(s1) + static_cast<uint64_t>(len1) * 2u < GuestMemory::size",
+          )
+          replace_exact(
+              "guest_win32_core.inc",
+              "s2 + len2 * 2 < GuestMemory::size",
+              "static_cast<uint64_t>(s2) + static_cast<uint64_t>(len2) * 2u < GuestMemory::size",
+          )
+
+          # Keep the translation-unit-local yield hook; remove the redundant global duplicate.
+          replace_exact(
+              "guest_runtime.cpp",
+              "extern \"C\" int guest_is_readable(uint32_t va, uint32_t bytes) {\n"
+              "    return (memory && memory->readable(va, bytes)) ? 1 : 0;\n"
+              "}\n\n",
+              "",
+          )
+          replace_exact(
+              "guest_runtime.cpp",
+              "renderWidth?renderWidth:640",
+              "renderWidth.load(std::memory_order_relaxed) ? renderWidth.load(std::memory_order_relaxed) : 640",
+          )
+          replace_exact(
+              "guest_runtime.cpp",
+              "renderHeight?renderHeight:480",
+              "renderHeight.load(std::memory_order_relaxed) ? renderHeight.load(std::memory_order_relaxed) : 480",
+          )
+
+          print("All native compatibility fixes applied.")
+          PY
+
       - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
